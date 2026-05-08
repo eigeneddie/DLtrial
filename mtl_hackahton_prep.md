@@ -8,7 +8,7 @@ We are building an Electronic Design Automation (EDA) tool for 2.5D Heterogeneou
 ## 2. System Architecture
 1. **Data Factory (`data_generator.py`):** A NumPy-based Finite Difference Method (FDM) physics engine. Generates synthetic 2.5D layouts and solves the 2D Poisson equation for steady-state heat.
 2. **ML Surrogate (`model_trainer.py`):** A PyTorch Convolutional Neural Network (CNN) trained on the synthetic data.
-3. **UI Dashboard (`app.py`):** A Streamlit web app for real-time interactive design.
+3. **UI Dashboard (`app.py`):** A Streamlit web app for real-time interactive design. I've generated a sanity_check.png that shows 1. chip layout, 2. substrate material, and 3. TSV (cooling channel) layout. The UI dashboard can do something like displaying these 3 panels. For Panel 1, a user can place the logic die or memory die where ever they want. Note that these two elements are the main heat generating components. Panel 2 is the easiest - just swap between two substrate base materials. Panel 3 is where the user can place where the cooling strip can be.
 
 ## 3. The Physics Engine Details (The Data Factory)
 The simulator uses a 64x64 NumPy grid representing the 2.5D interposer.
