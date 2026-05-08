@@ -23,6 +23,17 @@ Output Y  — shape (N, 64, 64):
 Thermo-mechanical overlay (not saved, used for flagging):
   Stress [ppm·°C] = |CTE_chip − CTE_substrate| × (T − T_ambient)
   Cells above CTE_STRESS_THRESHOLD are flagged as shear-stress failure risk.
+
+Usage:
+  # Full generation — runs all N samples, saves X_data.npy, Y_data.npy,
+  # readme.txt, and sanity_check.png to OUTPUT_DIR
+  python data_generator.py
+
+  # Single-sample preview — opens an interactive plot, no files written
+  python data_generator.py --preview
+
+  # Single-sample preview — saves plot to sanity_check.png, no other files written
+  python data_generator.py --preview --save
 """
 
 import numpy as np
@@ -105,34 +116,39 @@ def _place_rect(grid, occupied, r0, c0, h, w, value):
 
 def hub_and_spoke_layout(rng):
     """
-    Returns a 64×64 power grid [W] with hub-and-spoke chiplet placement.
+    Returns (Q_grid, chiplets) for a hub-and-spoke layout.
+    chiplets is a list of dicts with keys: label, r0, c0, h, w — used only
+    for sanity-check annotation, not saved to training data.
     """
     Q        = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32)
     occupied = np.zeros((GRID_SIZE, GRID_SIZE), dtype=bool)
+    chiplets = []
 
     # Central Logic die (the hub)
     hub_h = int(rng.integers(14, 22))
     hub_w = int(rng.integers(14, 22))
     hub_r = GRID_SIZE // 2 - hub_h // 2
     hub_c = GRID_SIZE // 2 - hub_w // 2
-    _place_rect(Q, occupied, hub_r, hub_c, hub_h, hub_w,
-                float(rng.uniform(*LOGIC_POWER_RANGE)))
+    if _place_rect(Q, occupied, hub_r, hub_c, hub_h, hub_w,
+                   float(rng.uniform(*LOGIC_POWER_RANGE))):
+        chiplets.append({"label": "Logic", "r0": hub_r, "c0": hub_c, "h": hub_h, "w": hub_w})
 
     # Peripheral Memory dies (the spokes) — one at each cardinal direction
     mem_h = int(rng.integers(5, 10))
     mem_w = int(rng.integers(5, 10))
-    gap   = 2   # empty cells between hub and memory die
+    gap   = 2
 
     for r0, c0 in [
-        (hub_r - mem_h - gap,          hub_c + hub_w // 2 - mem_w // 2),  # North
-        (hub_r + hub_h + gap,          hub_c + hub_w // 2 - mem_w // 2),  # South
-        (hub_r + hub_h // 2 - mem_h // 2, hub_c - mem_w - gap),           # West
-        (hub_r + hub_h // 2 - mem_h // 2, hub_c + hub_w + gap),           # East
+        (hub_r - mem_h - gap,              hub_c + hub_w // 2 - mem_w // 2),  # North
+        (hub_r + hub_h + gap,              hub_c + hub_w // 2 - mem_w // 2),  # South
+        (hub_r + hub_h // 2 - mem_h // 2, hub_c - mem_w - gap),               # West
+        (hub_r + hub_h // 2 - mem_h // 2, hub_c + hub_w + gap),               # East
     ]:
-        _place_rect(Q, occupied, r0, c0, mem_h, mem_w,
-                    float(rng.uniform(*MEMORY_POWER_RANGE)))
+        if _place_rect(Q, occupied, r0, c0, mem_h, mem_w,
+                       float(rng.uniform(*MEMORY_POWER_RANGE))):
+            chiplets.append({"label": "Memory", "r0": r0, "c0": c0, "h": mem_h, "w": mem_w})
 
-    return Q
+    return Q, chiplets
 
 
 # ==============================================================================
@@ -143,23 +159,28 @@ def hub_and_spoke_layout(rng):
 
 def disaggregated_layout(rng):
     """
-    Returns a 64×64 power grid [W] with randomly distributed compute tiles.
+    Returns (Q_grid, chiplets) for a disaggregated tile layout.
+    chiplets is a list of dicts with keys: label, r0, c0, h, w — used only
+    for sanity-check annotation, not saved to training data.
     """
     Q        = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32)
     occupied = np.zeros((GRID_SIZE, GRID_SIZE), dtype=bool)
+    chiplets = []
 
     n_tiles = int(rng.integers(4, 9))
-    for _ in range(n_tiles):
+    for tile_idx in range(n_tiles):
         h = int(rng.integers(5, 12))
         w = int(rng.integers(5, 12))
-        for _ in range(60):   # up to 60 placement attempts per tile
+        for _ in range(60):
             r = int(rng.integers(1, GRID_SIZE - h - 1))
             c = int(rng.integers(1, GRID_SIZE - w - 1))
             if _place_rect(Q, occupied, r, c, h, w,
                            float(rng.uniform(*TILE_POWER_RANGE))):
+                chiplets.append({"label": f"Tile {tile_idx + 1}",
+                                  "r0": r, "c0": c, "h": h, "w": w})
                 break
 
-    return Q
+    return Q, chiplets
 
 
 # ==============================================================================
@@ -303,7 +324,7 @@ def compute_cte_stress(temp_map, k_grid):
 # STEP 4 — SANITY-CHECK PLOT
 # ==============================================================================
 
-def plot_sanity_check(X_sample, Y_sample, k_grid, h_grid, save_path=None):
+def plot_sanity_check(X_sample, Y_sample, k_grid, h_grid, chiplets=None, save_path=None):
     """
     1×4 subplot sanity check for one generated sample.
 
@@ -333,6 +354,17 @@ def plot_sanity_check(X_sample, Y_sample, k_grid, h_grid, save_path=None):
         f"{active.min():.0f}–{active.max():.0f} W" if len(active) else "no chiplets",
         fontsize=8
     )
+
+    # Die labels — annotation only, not part of training data
+    if chiplets:
+        for chip in chiplets:
+            center_c = chip["c0"] + chip["w"] / 2
+            center_r = chip["r0"] + chip["h"] / 2
+            fontsize  = 7 if min(chip["h"], chip["w"]) < 7 else 9
+            ax.text(center_c, center_r, chip["label"],
+                    ha="center", va="center", fontsize=fontsize,
+                    color="white", fontweight="bold",
+                    bbox=dict(boxstyle="round,pad=0.2", fc="black", alpha=0.45, lw=0))
 
     # --- Panel 2: Conductivity map ---
     ax = axes[1]
@@ -497,11 +529,12 @@ def main():
 
     X_data = np.zeros((NUM_SAMPLES, 3, GRID_SIZE, GRID_SIZE), dtype=np.float32)
     Y_data = np.zeros((NUM_SAMPLES, GRID_SIZE, GRID_SIZE),    dtype=np.float32)
-    last_k, last_h = None, None
+    last_k, last_h, last_chiplets = None, None, None
 
     for i in range(NUM_SAMPLES):
         # Step 1: layout (50/50 split between architectures)
-        Q_grid = hub_and_spoke_layout(rng) if rng.random() < 0.5 else disaggregated_layout(rng)
+        Q_grid, chiplets = (hub_and_spoke_layout(rng) if rng.random() < 0.5
+                            else disaggregated_layout(rng))
 
         # Step 2: material and cooling channels
         k_grid, material = build_material_grid(rng)
@@ -516,7 +549,7 @@ def main():
         X_data[i, 2] = h_grid
         Y_data[i]    = T_map
 
-        last_k, last_h = k_grid, h_grid
+        last_k, last_h, last_chiplets = k_grid, h_grid, chiplets
 
         if (i + 1) % 20 == 0:
             _, flags = compute_cte_stress(T_map, k_grid)
@@ -527,7 +560,8 @@ def main():
 
     # Sanity-check plot uses raw physical values — do this before normalizing
     plot_path = os.path.join(OUTPUT_DIR, "sanity_check.png")
-    plot_sanity_check(X_data[-1], Y_data[-1], last_k, last_h, save_path=plot_path)
+    plot_sanity_check(X_data[-1], Y_data[-1], last_k, last_h,
+                      chiplets=last_chiplets, save_path=plot_path)
 
     # Normalize to [0, 1] and record scaling constants
     print("Normalising to [0, 1] ...")
@@ -555,13 +589,14 @@ if __name__ == "__main__":
     import sys
     if "--preview" in sys.argv:
         # Single-sample preview — no files written
-        _rng     = np.random.default_rng(seed=0)
-        _Q       = hub_and_spoke_layout(_rng)
-        _k, _mat = build_material_grid(_rng)
-        _h       = build_cooling_grid(_rng)
-        _T       = fdm_steady_state(_Q, _k, _h)
+        _rng        = np.random.default_rng(seed=0)
+        _Q, _chips  = hub_and_spoke_layout(_rng)
+        _k, _mat    = build_material_grid(_rng)
+        _h          = build_cooling_grid(_rng)
+        _T          = fdm_steady_state(_Q, _k, _h)
         print(f"Preview  |  substrate: {_mat}  |  peak T: {_T.max():.1f} °C")
         _save = "sanity_check.png" if "--save" in sys.argv else None
-        plot_sanity_check(np.stack([_Q, _k, _h]), _T, _k, _h, save_path=_save)
+        plot_sanity_check(np.stack([_Q, _k, _h]), _T, _k, _h,
+                          chiplets=_chips, save_path=_save)
     else:
         main()
