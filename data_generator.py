@@ -303,7 +303,7 @@ def compute_cte_stress(temp_map, k_grid):
 # STEP 4 — SANITY-CHECK PLOT
 # ==============================================================================
 
-def plot_sanity_check(X_sample, Y_sample, k_grid, h_grid):
+def plot_sanity_check(X_sample, Y_sample, k_grid, h_grid, save_path=None):
     """
     1×4 subplot sanity check for one generated sample.
 
@@ -371,7 +371,12 @@ def plot_sanity_check(X_sample, Y_sample, k_grid, h_grid):
     )
 
     plt.tight_layout()
-    plt.show()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Saved: {save_path}")
+        plt.close()
+    else:
+        plt.show()
 
 
 # ==============================================================================
@@ -521,7 +526,8 @@ def main():
             )
 
     # Sanity-check plot uses raw physical values — do this before normalizing
-    plot_sanity_check(X_data[-1], Y_data[-1], last_k, last_h)
+    plot_path = os.path.join(OUTPUT_DIR, "sanity_check.png")
+    plot_sanity_check(X_data[-1], Y_data[-1], last_k, last_h, save_path=plot_path)
 
     # Normalize to [0, 1] and record scaling constants
     print("Normalising to [0, 1] ...")
@@ -555,6 +561,7 @@ if __name__ == "__main__":
         _h       = build_cooling_grid(_rng)
         _T       = fdm_steady_state(_Q, _k, _h)
         print(f"Preview  |  substrate: {_mat}  |  peak T: {_T.max():.1f} °C")
-        plot_sanity_check(np.stack([_Q, _k, _h]), _T, _k, _h)
+        _save = "sanity_check.png" if "--save" in sys.argv else None
+        plot_sanity_check(np.stack([_Q, _k, _h]), _T, _k, _h, save_path=_save)
     else:
         main()
