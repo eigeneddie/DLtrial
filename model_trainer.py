@@ -38,19 +38,24 @@ class ThermalSurrogate(nn.Module):
         super(ThermalSurrogate, self).__init__()
         self.encoder = nn.Sequential(
             nn.Conv2d(3, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
         )
         self.decoder = nn.Sequential(
             nn.Conv2d(128, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.Conv2d(64, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Conv2d(32, 1, 3, padding=1),
-            nn.Sigmoid()  # Since output is [0,1]
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
@@ -62,16 +67,19 @@ model = ThermalSurrogate().to(device)
 
 # Loss and optimizer
 criterion = nn.MSELoss()
-optimizer = optim.Adam(model.parameters(), lr=1e-3)
+optimizer = optim.Adam(model.parameters(), lr=5e-4)
 
 # Training loop
-num_epochs = 10
+num_epochs = 50
 train_losses = []
 val_losses = []
+train_maes = []
+val_maes = []
 
 for epoch in range(num_epochs):
     model.train()
     train_loss = 0
+    train_mae = 0
     for X_batch, Y_batch in train_loader:
         X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
         optimizer.zero_grad()
@@ -80,24 +88,32 @@ for epoch in range(num_epochs):
         loss.backward()
         optimizer.step()
         train_loss += loss.item()
+        train_mae += torch.mean(torch.abs(outputs - Y_batch)).item()
 
     train_loss /= len(train_loader)
+    train_mae /= len(train_loader)
     train_losses.append(train_loss)
+    train_maes.append(train_mae)
 
     # Validation
     model.eval()
     val_loss = 0
+    val_mae = 0
     with torch.no_grad():
         for X_batch, Y_batch in val_loader:
             X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
             outputs = model(X_batch)
             loss = criterion(outputs, Y_batch)
             val_loss += loss.item()
+            val_mae += torch.mean(torch.abs(outputs - Y_batch)).item()
 
     val_loss /= len(val_loader)
+    val_mae /= len(val_loader)
     val_losses.append(val_loss)
+    val_maes.append(val_mae)
 
-    print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+    if (epoch + 1) % 5 == 0 or epoch == 0:
+        print(f"Epoch {epoch+1:3d}/{num_epochs}, Train Loss: {train_loss:.4f} (MAE: {train_mae:.4f}), Val Loss: {val_loss:.4f} (MAE: {val_mae:.4f})")
 
 # Save model
 torch.save(model.state_dict(), 'thermal_surrogate.pth')
@@ -105,19 +121,32 @@ print("Model saved as thermal_surrogate.pth")
 
 # Save full epoch losses
 with open('training_loss_log.csv', 'w', encoding='utf-8') as f:
-    f.write('epoch,train_loss,val_loss\n')
-    for epoch_idx, (t_loss, v_loss) in enumerate(zip(train_losses, val_losses), start=1):
-        f.write(f"{epoch_idx},{t_loss:.6f},{v_loss:.6f}\n")
+    f.write('epoch,train_loss,val_loss,train_mae,val_mae\n')
+    for epoch_idx, (t_loss, v_loss, t_mae, v_mae) in enumerate(zip(train_losses, val_losses, train_maes, val_maes), start=1):
+        f.write(f"{epoch_idx},{t_loss:.6f},{v_loss:.6f},{t_mae:.6f},{v_mae:.6f}\n")
 print("Saved: training_loss_log.csv")
 
-# Plot losses
-plt.figure()
-plt.plot(train_losses, label='Train Loss')
-plt.plot(val_losses, label='Val Loss')
-plt.xlabel('Epoch')
-plt.ylabel('MSE Loss')
-plt.legend()
-plt.savefig('training_loss.png')
+# Plot losses and MAE
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+ax1.plot(train_losses, label='Train Loss', marker='o', markersize=3)
+ax1.plot(val_losses, label='Val Loss', marker='s', markersize=3)
+ax1.set_xlabel('Epoch')
+ax1.set_ylabel('MSE Loss')
+ax1.set_title('Training & Validation Loss')
+ax1.legend()
+ax1.grid(True, alpha=0.3)
+
+ax2.plot(train_maes, label='Train MAE', marker='o', markersize=3)
+ax2.plot(val_maes, label='Val MAE', marker='s', markersize=3)
+ax2.set_xlabel('Epoch')
+ax2.set_ylabel('MAE [normalized]')
+ax2.set_title('Training & Validation MAE')
+ax2.legend()
+ax2.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('training_loss.png', dpi=150, bbox_inches='tight')
 plt.show()
 
 print("Training complete. Next step: run inference or evaluation script.")
