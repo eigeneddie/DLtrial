@@ -657,6 +657,58 @@ if st.session_state.simulation_run:
             st.pyplot(fig_val)
             plt.close(fig_val)
 
+            fig_plot, axes_plot = plt.subplots(1, 2, figsize=(14, 5), facecolor="#121212")
+            ai_flat = validation["ai_map"].ravel()
+            fdm_flat = validation["fdm_map"].ravel()
+            sample_idx = np.linspace(0, len(ai_flat) - 1, min(700, len(ai_flat)), dtype=int)
+            min_temp = min(float(ai_flat.min()), float(fdm_flat.min()))
+            max_temp = max(float(ai_flat.max()), float(fdm_flat.max()))
+
+            ax = axes_plot[0]
+            ax.set_facecolor("#121212")
+            ax.scatter(
+                fdm_flat[sample_idx],
+                ai_flat[sample_idx],
+                s=8,
+                alpha=0.35,
+                color="#64B5F6",
+                edgecolors="none",
+            )
+            ax.plot([min_temp, max_temp], [min_temp, max_temp], color="#FFB74D", linewidth=1.5)
+            ax.set_title("AI vs FDM Cell Temperatures", color="#E0E0E0", fontsize=11)
+            ax.set_xlabel("FDM Reference [°C]", color="#E0E0E0")
+            ax.set_ylabel("AI Surrogate [°C]", color="#E0E0E0")
+            ax.tick_params(colors="#AAA")
+            ax.grid(color="#333333", linewidth=0.5, alpha=0.8)
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#333")
+
+            ax = axes_plot[1]
+            ax.set_facecolor("#121212")
+            center_row = GRID_SIZE // 2
+            x_axis = np.arange(GRID_SIZE)
+            ax.plot(x_axis, validation["fdm_map"][center_row], color="#FFB74D", linewidth=2, label="FDM")
+            ax.plot(x_axis, validation["ai_map"][center_row], color="#64B5F6", linewidth=2, label="AI")
+            ax.fill_between(
+                x_axis,
+                validation["fdm_map"][center_row],
+                validation["ai_map"][center_row],
+                color="#90CAF9",
+                alpha=0.18,
+            )
+            ax.set_title("Centerline Temperature Profile", color="#E0E0E0", fontsize=11)
+            ax.set_xlabel("Column Index", color="#E0E0E0")
+            ax.set_ylabel("Temperature [°C]", color="#E0E0E0")
+            ax.tick_params(colors="#AAA")
+            ax.grid(color="#333333", linewidth=0.5, alpha=0.8)
+            ax.legend(loc="upper right", facecolor="#1A1A1A", edgecolor="#333", labelcolor="#E0E0E0")
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#333")
+
+            fig_plot.subplots_adjust(left=0.07, right=0.98, top=0.88, bottom=0.16, wspace=0.28)
+            st.pyplot(fig_plot)
+            plt.close(fig_plot)
+
             st.markdown(
                 f"Validated answer: AI predicts peak temperature "
                 f"**{validation['peak_ai']:.1f} °C** versus FDM "
