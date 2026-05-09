@@ -190,7 +190,7 @@ st.set_page_config(
 st.markdown("""
 <style>
     .stApp {
-        background-color: #F6F8FB;
+        background-color: #E5E7EB;
         color: #1F2937;
         font-family: 'Inter', 'Segoe UI', sans-serif;
     }
@@ -234,8 +234,8 @@ st.markdown("""
     }
 
     [data-testid="stSidebar"] {
-        background-color: #FFFFFF;
-        border-right: 1px solid #E2E8F0;
+        background-color: #F3F4F6;
+        border-right: 1px solid #D1D5DB;
     }
 
     .chat-message {
@@ -250,8 +250,8 @@ st.markdown("""
     }
 
     div[data-testid="stExpander"] {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
+        background-color: #F9FAFB;
+        border: 1px solid #D1D5DB;
         border-radius: 8px;
     }
 
@@ -1085,9 +1085,6 @@ if st.session_state.simulation_run:
                 f"Runtime ratio **{validation['speedup']:.1f}x**"
             )
 
-    with st.expander("Structured design state for GenAI", expanded=False):
-        st.json(st.session_state.design_state)
-
 # ═══════════════════════════════════════════════════════════════════════════
 # PART 3 — OPTIONAL CO-PILOT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1167,14 +1164,14 @@ with st.expander("Thermal copilot", expanded=False):
             unsafe_allow_html=True,
         )
 
-with st.expander("Knowledge sources", expanded=False):
-    st.caption("Optional source discovery for papers, datasheets, and standards before ingestion into Qdrant.")
+with st.expander("Online evidence copilot", expanded=False):
+    st.caption("Perplexity gathers current evidence; Gemma turns it into a concise layout recommendation.")
     api_from_env = os.getenv("PERPLEXITY_API_KEY", "")
     if not api_from_env:
         st.warning("Set `PERPLEXITY_API_KEY` in the environment, or paste a temporary key below.")
 
     source_topic = st.selectbox(
-        "Source topic",
+        "Evidence topic",
         [
             "2.5D chiplet thermal modeling",
             "TSV thermal cooling and heat extraction",
@@ -1185,18 +1182,28 @@ with st.expander("Knowledge sources", expanded=False):
             "AI surrogate models for thermal simulation",
         ],
     )
-    source_goal = st.text_input(
-        "Source goal",
-        value="grounding copilot recommendations with variables, equations, and experimental data",
-    )
-    source_mode = st.radio("Search mode", ["academic", "web"], horizontal=True)
-    source_model = st.selectbox("Perplexity model", ["sonar-pro", "sonar"], index=0)
     temp_key = st.text_input(
         "Temporary Perplexity API key",
         value="",
         type="password",
         help="Leave empty to use PERPLEXITY_API_KEY from the environment.",
     )
+    evidence_question = st.text_input(
+        "Question",
+        value="What does outside evidence suggest I should test next for this thermal result?",
+    )
+
+    source_goal = "grounding copilot recommendations with variables, equations, and experimental data"
+    source_mode = "academic"
+    source_model = "sonar-pro"
+    show_online_settings = st.checkbox("Show online search settings", value=False)
+    if show_online_settings:
+        source_goal = st.text_input(
+            "Source goal",
+            value=source_goal,
+        )
+        source_mode = st.radio("Search mode", ["academic", "web"], horizontal=True)
+        source_model = st.selectbox("Perplexity model", ["sonar-pro", "sonar"], index=0)
 
     source_query = build_source_query(
         source_topic,
@@ -1207,34 +1214,10 @@ with st.expander("Knowledge sources", expanded=False):
     if show_source_prompt:
         st.code(source_query, language="text")
 
-    c_find, c_evidence = st.columns(2)
-    with c_find:
-        find_sources = st.button("Find sources")
-    with c_evidence:
-        get_evidence = st.button("Get grounded recommendation")
-
-    evidence_question = st.text_input(
-        "Evidence question",
-        value="What does outside evidence suggest I should test next for this thermal result?",
-    )
-
-    if find_sources:
+    if st.button("Ask with online evidence"):
         key = temp_key or api_from_env
         try:
-            with st.spinner("Searching source candidates..."):
-                st.session_state.source_finder_result = search_perplexity_sources(
-                    source_query,
-                    api_key=key,
-                    search_mode=source_mode,
-                    model=source_model,
-                )
-        except Exception as e:
-            st.session_state.source_finder_result = {"error": str(e)}
-
-    if get_evidence:
-        key = temp_key or api_from_env
-        try:
-            with st.spinner("Getting structured Sonar evidence and asking Gemma..."):
+            with st.spinner("Searching evidence and asking Gemma..."):
                 evidence_package = search_perplexity_structured_evidence(
                     source_query,
                     api_key=key,
@@ -1254,49 +1237,9 @@ with st.expander("Knowledge sources", expanded=False):
         except Exception as e:
             st.session_state.evidence_recommendation = {"error": str(e)}
 
-    result = st.session_state.get("source_finder_result")
-    if result:
-        if result.get("error"):
-            st.error(result["error"])
-        else:
-            st.markdown("#### Source Discovery Summary")
-            st.markdown(result.get("answer", "No summary returned."))
-
-            search_results = result.get("search_results", [])
-            if search_results:
-                st.markdown("#### Candidate Sources")
-                for idx, item in enumerate(search_results[:8], start=1):
-                    title = item.get("title") or f"Source {idx}"
-                    url = item.get("url") or ""
-                    snippet = item.get("snippet") or ""
-                    date = item.get("date") or item.get("last_updated") or ""
-                    label = f"{idx}. [{title}]({url})" if url else f"{idx}. {title}"
-                    st.markdown(label)
-                    if date:
-                        st.caption(f"Date: {date}")
-                    if snippet:
-                        st.caption(snippet)
-
-            citations = result.get("citations", [])
-            if citations:
-                if st.checkbox("Show citation URLs", value=False):
-                    for url in citations:
-                        st.markdown(f"- [{url}]({url})")
-
-            related = result.get("related_questions", [])
-            if related:
-                if st.checkbox("Show related follow-up searches", value=False):
-                    for question in related:
-                        st.markdown(f"- {question}")
-
-            st.info(
-                "Next iteration: add an `Ingest selected source` action that downloads approved open-access PDFs, "
-                "parses them with Docling, embeds chunks, and stores them in Qdrant."
-            )
-
     evidence_result = st.session_state.get("evidence_recommendation")
     if evidence_result:
-        st.markdown("#### Evidence-Grounded Recommendation")
+        st.markdown("#### Online Evidence Recommendation")
         if evidence_result.get("error"):
             st.error(evidence_result["error"])
         else:
