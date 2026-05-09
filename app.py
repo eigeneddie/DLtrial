@@ -391,9 +391,9 @@ with col_config:
     material_choice = st.selectbox("Substrate Material", list(MATERIALS.keys()), format_func=lambda x: x.upper())
     solver_mode = st.radio(
         "Thermal Engine",
-        ["AI Surrogate", "FDM Physics", "Compare AI + FDM"],
+        ["AI Surrogate", "FDM Physics"],
         horizontal=False,
-        help="Compare AI + FDM runs both engines and produces validation metrics.",
+        help="AI Surrogate uses thermal_surrogate.pth. FDM Physics keeps the original numerical solver.",
     )
 
     c_tsv, c_ori = st.columns(2)
@@ -403,6 +403,7 @@ with col_config:
         tsv_orientation = st.selectbox("Strip Orientation", ["Vertical", "Horizontal"])
 
     run_sim = st.button("▶ RUN THERMAL ANALYSIS")
+    run_validation = st.button("VALIDATE AI VS FDM")
 
     with st.expander("Advanced layout table", expanded=False):
         edited_df = st.data_editor(
@@ -479,20 +480,19 @@ with col_canvas:
 # EXECUTION LOGIC
 # ═══════════════════════════════════════════════════════════════════════════
 
-if run_sim:
+if run_sim or run_validation:
     engine_label = {
         "AI Surrogate": "trained AI surrogate",
         "FDM Physics": "finite difference solver",
-        "Compare AI + FDM": "AI surrogate and FDM validator",
-    }[solver_mode]
+    }[solver_mode] if run_sim else "AI surrogate and FDM validator"
     with st.spinner(f"Executing {engine_label}..."):
         validation_result = None
         try:
-            if solver_mode == "Compare AI + FDM":
+            if run_validation:
                 ai_map, ai_ms = run_engine("AI Surrogate", Q_grid, k_grid, h_grid)
                 fdm_map, fdm_ms = run_engine("FDM Physics", Q_grid, k_grid, h_grid)
                 validation_result = build_validation_result(ai_map, fdm_map, ai_ms, fdm_ms)
-                T_map = ai_map
+                T_map = ai_map if solver_mode == "AI Surrogate" else fdm_map
                 elapsed_ms = ai_ms + fdm_ms
             elif solver_mode == "AI Surrogate":
                 T_map, elapsed_ms = run_engine("AI Surrogate", Q_grid, k_grid, h_grid)
@@ -523,7 +523,7 @@ if run_sim:
             "delta_T": float(T_map.max() - T_AMBIENT),
             "material": material_choice,
             "tsvs": num_tsvs,
-            "engine": solver_mode,
+            "engine": "Validation" if run_validation else solver_mode,
             "runtime_ms": float(elapsed_ms),
             "validation_verdict": validation_result["verdict"] if validation_result else "",
         }
@@ -610,52 +610,10 @@ if st.session_state.simulation_run:
     with validation_tab:
         validation = st.session_state.validation
         if not validation:
-            st.info("Select `Compare AI + FDM`, then run thermal analysis to collect validation data.")
+            st.info("Click `VALIDATE AI VS FDM` to collect validation data for the current layout.")
         else:
             st.subheader(validation["verdict"])
             st.caption(validation["verdict_detail"])
-
-            v1, v2, v3, v4, v5 = st.columns(5)
-            v1.metric("Peak Error", f"{validation['peak_error']:.2f} °C")
-            v2.metric("MAE", f"{validation['mae']:.2f} °C")
-            v3.metric("RMSE", f"{validation['rmse']:.2f} °C")
-            v4.metric("Max Error", f"{validation['max_error']:.2f} °C")
-            v5.metric("Speedup", f"{validation['speedup']:.1f}x")
-
-            t1, t2, t3 = st.columns(3)
-            t1.metric("AI Runtime", f"{validation['ai_ms']:.1f} ms", f"Peak {validation['peak_ai']:.1f} °C")
-            t2.metric("FDM Runtime", f"{validation['fdm_ms']:.1f} ms", f"Peak {validation['peak_fdm']:.1f} °C")
-            t3.metric("Reference", "FDM", "ground truth")
-
-            fig_val, axes_val = plt.subplots(1, 3, figsize=(18, 5), facecolor="#121212")
-            vmin = min(float(validation["ai_map"].min()), float(validation["fdm_map"].min()))
-            vmax = max(float(validation["ai_map"].max()), float(validation["fdm_map"].max()))
-            validation_panels = [
-                (axes_val[0], validation["ai_map"], "inferno", "AI Surrogate [°C]", vmin, vmax),
-                (axes_val[1], validation["fdm_map"], "inferno", "FDM Reference [°C]", vmin, vmax),
-                (axes_val[2], validation["err_map"], "magma", "|AI - FDM| [°C]", 0, None),
-            ]
-            for ax, data, cmap, title, panel_vmin, panel_vmax in validation_panels:
-                ax.set_facecolor("#121212")
-                im = ax.imshow(
-                    data,
-                    cmap=cmap,
-                    origin="upper",
-                    interpolation="bilinear",
-                    vmin=panel_vmin,
-                    vmax=panel_vmax,
-                )
-                cb = fig_val.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-                cb.ax.yaxis.set_tick_params(color="#E0E0E0")
-                plt.setp(cb.ax.yaxis.get_ticklabels(), color="#E0E0E0")
-                ax.set_title(title, fontsize=11, color="#E0E0E0")
-                ax.tick_params(colors="#AAA")
-                for spine in ax.spines.values():
-                    spine.set_edgecolor("#333")
-
-            plt.tight_layout()
-            st.pyplot(fig_val)
-            plt.close(fig_val)
 
             fig_plot, axes_plot = plt.subplots(1, 2, figsize=(14, 5), facecolor="#121212")
             ai_flat = validation["ai_map"].ravel()
@@ -710,11 +668,15 @@ if st.session_state.simulation_run:
             plt.close(fig_plot)
 
             st.markdown(
-                f"Validated answer: AI predicts peak temperature "
-                f"**{validation['peak_ai']:.1f} °C** versus FDM "
-                f"**{validation['peak_fdm']:.1f} °C**, with "
-                f"**{validation['mae']:.2f} °C MAE** and "
-                f"**{validation['speedup']:.1f}x speedup**."
+                f"**Values:** AI peak **{validation['peak_ai']:.1f} °C** | "
+                f"FDM peak **{validation['peak_fdm']:.1f} °C** | "
+                f"Peak error **{validation['peak_error']:.2f} °C** | "
+                f"MAE **{validation['mae']:.2f} °C** | "
+                f"RMSE **{validation['rmse']:.2f} °C** | "
+                f"Max error **{validation['max_error']:.2f} °C** | "
+                f"AI **{validation['ai_ms']:.1f} ms** | "
+                f"FDM **{validation['fdm_ms']:.1f} ms** | "
+                f"Runtime ratio **{validation['speedup']:.1f}x**"
             )
 
 # ═══════════════════════════════════════════════════════════════════════════
