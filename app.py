@@ -50,6 +50,57 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "thermal_surrogate.pth"
 PERPLEXITY_ENDPOINT = "https://api.perplexity.ai/v1/sonar"
 
+EVIDENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query_topic": {"type": "string"},
+        "evidence_items": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "source_type": {
+                        "type": "string",
+                        "enum": ["paper", "datasheet", "standard", "vendor_note", "article", "unknown"],
+                    },
+                    "key_claim": {"type": "string"},
+                    "variables": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "relevance_to_current_design": {"type": "string"},
+                    "suitable_for_docling_ingestion": {"type": "boolean"},
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high"],
+                    },
+                    "citation_index": {"type": "integer"},
+                },
+                "required": [
+                    "title",
+                    "source_type",
+                    "key_claim",
+                    "variables",
+                    "relevance_to_current_design",
+                    "suitable_for_docling_ingestion",
+                    "confidence",
+                    "citation_index",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "caveats": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "recommended_next_search": {"type": "string"},
+    },
+    "required": ["query_topic", "evidence_items", "caveats", "recommended_next_search"],
+    "additionalProperties": False,
+}
+
 X_SCALES = {
     "Q": (0.0, 149.9663),
     "k": (149.0, 260.0),
@@ -135,70 +186,77 @@ st.set_page_config(
     page_icon   = "📐",
 )
 
-# ── Custom CSS for EDA Aesthetic ───────────────────────────────────────────
+# ── Custom CSS ─────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Global CAD-like styling */
     .stApp {
-        background-color: #121212;
-        color: #E0E0E0;
+        background-color: #F6F8FB;
+        color: #1F2937;
         font-family: 'Inter', 'Segoe UI', sans-serif;
     }
 
-    /* Headers */
     h1, h2, h3 {
-        color: #FFFFFF;
-        font-weight: 500;
-        letter-spacing: 0.5px;
+        color: #111827;
+        font-weight: 650;
+        letter-spacing: 0;
     }
 
-    /* Metrics */
     [data-testid="stMetricValue"] {
-        color: #4CAF50; /* Tech green */
+        color: #2563EB;
         font-family: 'Consolas', 'Courier New', monospace;
     }
 
-    /* Buttons */
+    [data-testid="stMetricDelta"] {
+        color: #64748B;
+    }
+
     .stButton>button {
-        background-color: #1E88E5;
+        background-color: #2563EB;
         color: white;
-        border-radius: 2px;
+        border-radius: 6px;
         border: none;
         font-weight: 600;
-        letter-spacing: 1px;
-        text-transform: uppercase;
+        letter-spacing: 0;
         width: 100%;
     }
     .stButton>button:hover {
-        background-color: #1565C0;
-        border-color: #1565C0;
+        background-color: #1D4ED8;
+        border-color: #1D4ED8;
         color: white;
     }
 
-    /* Tables/Dataframe */
     .stDataFrame {
         font-family: 'Consolas', 'Courier New', monospace;
     }
 
-    /* Divider */
     hr {
-        border-color: #333333;
+        border-color: #E2E8F0;
     }
 
-    /* Sidebar */
     [data-testid="stSidebar"] {
-        background-color: #1A1A1A;
-        border-right: 1px solid #333;
+        background-color: #FFFFFF;
+        border-right: 1px solid #E2E8F0;
     }
 
-    /* Console / Chat */
     .chat-message {
-        padding: 10px;
-        border-radius: 4px;
-        margin-bottom: 10px;
+        padding: 12px 14px;
+        border-radius: 8px;
+        margin: 8px 0 12px;
         font-size: 14px;
-        border-left: 3px solid #1E88E5;
-        background-color: #1E1E1E;
+        border: 1px solid #DBEAFE;
+        border-left: 3px solid #2563EB;
+        background-color: #FFFFFF;
+        color: #1F2937;
+    }
+
+    div[data-testid="stExpander"] {
+        background-color: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 8px;
+    }
+
+    div[data-testid="stTabs"] button {
+        color: #334155;
     }
 
 </style>
@@ -266,7 +324,7 @@ def add_component_from_click(component_type, row, col):
 
 def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_px=576):
     cell = size_px // GRID_SIZE
-    image = Image.new("RGB", (size_px, size_px), "#111417")
+    image = Image.new("RGB", (size_px, size_px), "#F8FAFC")
     draw = ImageDraw.Draw(image, "RGBA")
 
     # Cooling strips are quiet background context, not the primary interaction.
@@ -275,18 +333,18 @@ def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_p
             col = 12 + i * 16
             draw.rectangle(
                 [col * cell, 0, (col + 3) * cell - 1, size_px],
-                fill=(126, 87, 194, 70),
+                fill=(99, 102, 241, 45),
             )
         else:
             row = 12 + i * 16
             draw.rectangle(
                 [0, row * cell, size_px, (row + 3) * cell - 1],
-                fill=(126, 87, 194, 70),
+                fill=(99, 102, 241, 45),
             )
 
     for grid_idx in range(0, GRID_SIZE + 1, 4):
         pos = grid_idx * cell
-        color = (55, 64, 72, 150) if grid_idx % 16 else (96, 112, 124, 185)
+        color = (203, 213, 225, 170) if grid_idx % 16 else (148, 163, 184, 220)
         draw.line([(pos, 0), (pos, size_px)], fill=color, width=1)
         draw.line([(0, pos), (size_px, pos)], fill=color, width=1)
 
@@ -296,9 +354,9 @@ def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_p
         "Controller": (255, 183, 77, 215),
     }
     outlines = {
-        "Logic": (144, 202, 249, 255),
-        "Memory": (165, 214, 167, 255),
-        "Controller": (255, 224, 178, 255),
+        "Logic": (30, 64, 175, 255),
+        "Memory": (22, 101, 52, 255),
+        "Controller": (180, 83, 9, 255),
     }
     for _, row in components_df.iterrows():
         try:
@@ -312,7 +370,7 @@ def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_p
         except Exception:
             continue
 
-    draw.rectangle([0, 0, size_px - 1, size_px - 1], outline=(130, 145, 158, 255), width=2)
+    draw.rectangle([0, 0, size_px - 1, size_px - 1], outline=(148, 163, 184, 255), width=2)
     return image
 
 
@@ -594,22 +652,115 @@ def search_perplexity_sources(query, api_key, search_mode="academic", model="son
         "usage": data.get("usage") or {},
     }
 
+
+def search_perplexity_structured_evidence(query, api_key, search_mode="academic", model="sonar-pro"):
+    if not api_key:
+        raise RuntimeError("PERPLEXITY_API_KEY is not configured.")
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Extract structured evidence for microelectronics packaging. "
+                    "Use citations/search results for URLs. Do not place URLs inside the JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"{query}\n\n"
+                    "Return JSON only. Each evidence item should connect one source claim "
+                    "to variables useful for 2.5D chiplet thermal design."
+                ),
+            },
+        ],
+        "temperature": 0.05,
+        "max_tokens": 1200,
+        "search_mode": search_mode,
+        "return_related_questions": True,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "thermal_packaging_evidence",
+                "schema": EVIDENCE_SCHEMA,
+            },
+        },
+    }
+    resp = requests.post(
+        PERPLEXITY_ENDPOINT,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=90,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Perplexity API error: {resp.status_code} {resp.text[:300]}")
+
+    data = resp.json()
+    content = ""
+    choices = data.get("choices", [])
+    if choices:
+        content = choices[0].get("message", {}).get("content", "")
+    try:
+        evidence_json = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Perplexity returned invalid JSON: {e}. Raw: {content[:300]}")
+
+    return {
+        "evidence": evidence_json,
+        "citations": data.get("citations") or [],
+        "search_results": data.get("search_results") or [],
+        "related_questions": data.get("related_questions") or [],
+        "usage": data.get("usage") or {},
+    }
+
+
+def ask_gemma_with_evidence(question, design_state, evidence_package, model_name):
+    prompt = {
+        "current_design_state": design_state or {"status": "No simulation run yet."},
+        "online_structured_evidence": evidence_package.get("evidence", {}),
+        "citation_urls": evidence_package.get("citations", []),
+        "engineer_question": question,
+    }
+    payload = {
+        "model": model_name,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a concise 2.5D packaging thermal copilot. Use the current design "
+                    "state as the engineering truth and use online evidence only as support. "
+                    "Do not invent values. Answer in three sections: Direct answer, Evidence, "
+                    "Next experiment. Keep it under 180 words."
+                ),
+            },
+            {"role": "user", "content": json.dumps(prompt, indent=2)},
+        ],
+        "stream": False,
+        "think": False,
+        "options": {"temperature": 0.05, "num_predict": 500},
+    }
+    resp = requests.post("http://127.0.0.1:11434/api/chat", json=payload, timeout=120)
+    if not resp.ok:
+        raise RuntimeError(f"Ollama API error: {resp.status_code} {resp.text[:300]}")
+    return resp.json().get("message", {}).get("content", "").strip() or "No response from Gemma."
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PART 1 — DESIGN ENVIRONMENT
 # ═══════════════════════════════════════════════════════════════════════════
 
-st.title("Thermal-Mechanical Co-Design Environment")
-st.markdown("Configure package constraints, place active components, and execute steady-state thermal analysis.")
+st.title("Chilli Chiplets")
+st.markdown("Place chiplets, run the trained thermal surrogate, and validate against the physics solver when needed.")
 st.divider()
 
 col_canvas, col_config = st.columns([1.5, 1])
 
 with col_config:
-    st.subheader("Component Placer")
-    st.caption("Choose a component, then click directly on the blueprint.")
+    st.subheader("Design Controls")
 
     place_type = st.segmented_control(
-        "Component",
+        "Place component",
         options=list(COMPONENT_PRESETS.keys()),
         default="Logic",
     )
@@ -619,30 +770,31 @@ with col_config:
     c_size.metric("Footprint", f"{preset['Width']} x {preset['Height']}")
     c_power.metric("Power", f"{preset['Power_W']:.0f} W")
 
-    if st.button("CLEAR LAYOUT"):
+    if st.button("Clear layout"):
         st.session_state.components_df = st.session_state.components_df.iloc[0:0].copy()
         st.session_state.simulation_run = False
         st.rerun()
 
-    st.subheader("Substrate & Cooling")
+    st.markdown("#### Package")
     material_choice = st.selectbox("Substrate Material", list(MATERIALS.keys()), format_func=lambda x: x.upper())
-    solver_mode = st.radio(
-        "Thermal Engine",
-        ["AI Surrogate", "FDM Physics"],
-        horizontal=False,
-        help="AI Surrogate uses thermal_surrogate.pth. FDM Physics keeps the original numerical solver.",
-    )
+    solver_mode = "AI Surrogate"
 
     c_tsv, c_ori = st.columns(2)
     with c_tsv:
-        num_tsvs = st.number_input("TSV Cooling Strips", min_value=0, max_value=5, value=1)
+        num_tsvs = st.number_input("TSV strips", min_value=0, max_value=5, value=1)
     with c_ori:
-        tsv_orientation = st.selectbox("Strip Orientation", ["Vertical", "Horizontal"])
+        tsv_orientation = st.selectbox("Orientation", ["Vertical", "Horizontal"])
 
-    run_sim = st.button("▶ RUN THERMAL ANALYSIS")
-    run_validation = st.button("VALIDATE AI VS FDM")
+    run_sim = st.button("Run thermal analysis")
+    run_validation = st.button("Validate AI vs FDM")
 
-    with st.expander("Advanced layout table", expanded=False):
+    with st.expander("Advanced", expanded=False):
+        solver_mode = st.radio(
+            "Thermal engine",
+            ["AI Surrogate", "FDM Physics"],
+            horizontal=True,
+            help="AI Surrogate uses thermal_surrogate.pth. FDM Physics keeps the numerical solver.",
+        )
         edited_df = st.data_editor(
             st.session_state.components_df,
             num_rows="dynamic",
@@ -711,7 +863,7 @@ with col_canvas:
         add_component_from_click(place_type, grid_row, grid_col)
         st.rerun()
 
-    st.caption(f"Click the blueprint to place a {place_type}. Purple bands show TSV cooling regions.")
+    st.caption(f"Selected: {place_type}. Click the package grid to place it. Soft blue bands show TSV cooling regions.")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EXECUTION LOGIC
@@ -802,7 +954,7 @@ if st.session_state.simulation_run:
 
     with map_tab:
         st.markdown("### Thermal Distribution Map")
-        fig_res, axes = plt.subplots(1, 4, figsize=(22, 5), facecolor="#121212")
+        fig_res, axes = plt.subplots(1, 4, figsize=(22, 5), facecolor="#FFFFFF")
         display_grids = st.session_state.sim_grids or {"Q": Q_grid, "k": k_grid, "h": h_grid}
 
         panels = [
@@ -811,28 +963,28 @@ if st.session_state.simulation_run:
             (axes[2], display_grids["h"], "Purples", "h [W/(m²·K)]",     "Cooling (TSVs)"),
         ]
         for ax, data, cmap, cbar_label, title in panels:
-            ax.set_facecolor("#121212")
+            ax.set_facecolor("#FFFFFF")
             im = ax.imshow(data, cmap=cmap, origin="upper", interpolation="nearest")
             cb = fig_res.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            cb.set_label(cbar_label, fontsize=9, color="#E0E0E0")
-            cb.ax.yaxis.set_tick_params(color="#E0E0E0")
-            plt.setp(cb.ax.yaxis.get_ticklabels(), color="#E0E0E0")
-            ax.set_title(title, fontsize=11, color="#E0E0E0")
-            ax.tick_params(colors="#AAA")
+            cb.set_label(cbar_label, fontsize=9, color="#334155")
+            cb.ax.yaxis.set_tick_params(color="#475569")
+            plt.setp(cb.ax.yaxis.get_ticklabels(), color="#475569")
+            ax.set_title(title, fontsize=11, color="#111827")
+            ax.tick_params(colors="#64748B")
             for spine in ax.spines.values():
-                spine.set_edgecolor("#333")
+                spine.set_edgecolor("#CBD5E1")
 
         # Temp map
         ax = axes[3]
-        ax.set_facecolor("#121212")
+        ax.set_facecolor("#FFFFFF")
         T_map = st.session_state.T_map
         flag_map = st.session_state.flag_map
 
         im = ax.imshow(T_map, cmap="inferno", origin="upper", interpolation="bilinear", vmin=T_AMBIENT)
         cb = fig_res.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cb.set_label("Temperature [°C]", fontsize=9, color="#E0E0E0")
-        cb.ax.yaxis.set_tick_params(color="#E0E0E0")
-        plt.setp(cb.ax.yaxis.get_ticklabels(), color="#E0E0E0")
+        cb.set_label("Temperature [°C]", fontsize=9, color="#334155")
+        cb.ax.yaxis.set_tick_params(color="#475569")
+        plt.setp(cb.ax.yaxis.get_ticklabels(), color="#475569")
 
         levels = np.arange(np.ceil((T_AMBIENT + 5) / 10) * 10, T_map.max(), 10)
         if len(levels):
@@ -842,18 +994,18 @@ if st.session_state.simulation_run:
         rows, cols = np.where(flag_map)
         if len(rows):
             ax.scatter(cols, rows, c="#00FFFF", s=2, alpha=0.7, label="CTE fail")
-            ax.legend(fontsize=8, loc="upper right", facecolor="#1A1A1A", labelcolor="white")
+            ax.legend(fontsize=8, loc="upper right", facecolor="#FFFFFF", edgecolor="#CBD5E1", labelcolor="#111827")
 
-        ax.set_title("Temperature Output", fontsize=11, color="#E0E0E0")
-        ax.tick_params(colors="#AAA")
+        ax.set_title("Temperature Output", fontsize=11, color="#111827")
+        ax.tick_params(colors="#64748B")
         for spine in ax.spines.values():
-            spine.set_edgecolor("#333")
+            spine.set_edgecolor("#CBD5E1")
 
         plt.tight_layout()
 
         # Base64 for Co-Pilot
         buf = io.BytesIO()
-        fig_res.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor="#121212")
+        fig_res.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor="#FFFFFF")
         buf.seek(0)
         heatmap_bytes  = buf.read()
         st.session_state.heatmap_b64 = base64.b64encode(heatmap_bytes).decode("utf-8")
@@ -869,7 +1021,7 @@ if st.session_state.simulation_run:
             st.subheader(validation["verdict"])
             st.caption(validation["verdict_detail"])
 
-            fig_plot, axes_plot = plt.subplots(1, 2, figsize=(14, 5), facecolor="#121212")
+            fig_plot, axes_plot = plt.subplots(1, 2, figsize=(14, 5), facecolor="#FFFFFF")
             ai_flat = validation["ai_map"].ravel()
             fdm_flat = validation["fdm_map"].ravel()
             sample_idx = np.linspace(0, len(ai_flat) - 1, min(700, len(ai_flat)), dtype=int)
@@ -877,7 +1029,7 @@ if st.session_state.simulation_run:
             max_temp = max(float(ai_flat.max()), float(fdm_flat.max()))
 
             ax = axes_plot[0]
-            ax.set_facecolor("#121212")
+            ax.set_facecolor("#FFFFFF")
             ax.scatter(
                 fdm_flat[sample_idx],
                 ai_flat[sample_idx],
@@ -887,16 +1039,16 @@ if st.session_state.simulation_run:
                 edgecolors="none",
             )
             ax.plot([min_temp, max_temp], [min_temp, max_temp], color="#FFB74D", linewidth=1.5)
-            ax.set_title("AI vs FDM Cell Temperatures", color="#E0E0E0", fontsize=11)
-            ax.set_xlabel("FDM Reference [°C]", color="#E0E0E0")
-            ax.set_ylabel("AI Surrogate [°C]", color="#E0E0E0")
-            ax.tick_params(colors="#AAA")
-            ax.grid(color="#333333", linewidth=0.5, alpha=0.8)
+            ax.set_title("AI vs FDM Cell Temperatures", color="#111827", fontsize=11)
+            ax.set_xlabel("FDM Reference [°C]", color="#334155")
+            ax.set_ylabel("AI Surrogate [°C]", color="#334155")
+            ax.tick_params(colors="#64748B")
+            ax.grid(color="#E2E8F0", linewidth=0.6, alpha=0.9)
             for spine in ax.spines.values():
-                spine.set_edgecolor("#333")
+                spine.set_edgecolor("#CBD5E1")
 
             ax = axes_plot[1]
-            ax.set_facecolor("#121212")
+            ax.set_facecolor("#FFFFFF")
             center_row = GRID_SIZE // 2
             x_axis = np.arange(GRID_SIZE)
             ax.plot(x_axis, validation["fdm_map"][center_row], color="#FFB74D", linewidth=2, label="FDM")
@@ -908,14 +1060,14 @@ if st.session_state.simulation_run:
                 color="#90CAF9",
                 alpha=0.18,
             )
-            ax.set_title("Centerline Temperature Profile", color="#E0E0E0", fontsize=11)
-            ax.set_xlabel("Column Index", color="#E0E0E0")
-            ax.set_ylabel("Temperature [°C]", color="#E0E0E0")
-            ax.tick_params(colors="#AAA")
-            ax.grid(color="#333333", linewidth=0.5, alpha=0.8)
-            ax.legend(loc="upper right", facecolor="#1A1A1A", edgecolor="#333", labelcolor="#E0E0E0")
+            ax.set_title("Centerline Temperature Profile", color="#111827", fontsize=11)
+            ax.set_xlabel("Column Index", color="#334155")
+            ax.set_ylabel("Temperature [°C]", color="#334155")
+            ax.tick_params(colors="#64748B")
+            ax.grid(color="#E2E8F0", linewidth=0.6, alpha=0.9)
+            ax.legend(loc="upper right", facecolor="#FFFFFF", edgecolor="#CBD5E1", labelcolor="#111827")
             for spine in ax.spines.values():
-                spine.set_edgecolor("#333")
+                spine.set_edgecolor("#CBD5E1")
 
             fig_plot.subplots_adjust(left=0.07, right=0.98, top=0.88, bottom=0.16, wspace=0.28)
             st.pyplot(fig_plot)
@@ -937,12 +1089,10 @@ if st.session_state.simulation_run:
         st.json(st.session_state.design_state)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 3 — ENGINEERING CONSOLE (CO-PILOT)
+# PART 3 — OPTIONAL CO-PILOT
 # ═══════════════════════════════════════════════════════════════════════════
 
 st.divider()
-st.subheader("Engineering Analysis Console")
-st.markdown("LLM-powered assistant grounded in indexed thermal literature and simulation data.")
 
 @st.cache_resource(show_spinner="Initializing RAG Engine...")
 def load_rag():
@@ -953,65 +1103,72 @@ def load_rag():
     except Exception as e:
         return None, str(e)
 
-rag, rag_error = load_rag()
-
-if rag_error:
-    st.warning(f"Co-pilot unavailable: {rag_error}")
-elif not rag.ready:
-    st.warning("Database unavailable. Run `python rag/ingest_thermal_papers.py` to index literature.")
-else:
-    st.caption(f"Knowledge Base Active: {rag.chunk_count()} vectors loaded.")
-
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Analysis console initialized. Awaiting queries."}]
+    st.session_state.messages = []
+if "latest_copilot_answer" not in st.session_state:
+    st.session_state.latest_copilot_answer = ""
+if "latest_copilot_question" not in st.session_state:
+    st.session_state.latest_copilot_question = ""
 
-copilot_model = st.text_input(
-    "Local Ollama model",
-    value="gemma4:e4b",
-    help="Use any local Ollama chat model, for example gemma4:e4b, granite3.2-vision, qwen3.5:9b, or llama3.1.",
-)
+with st.expander("Thermal copilot", expanded=False):
+    rag, rag_error = load_rag()
 
-for msg in st.session_state.messages:
-    role_label = "ANALYSIS ASSISTANT" if msg["role"] == "assistant" else "ENGINEER"
-    st.markdown(f"**{role_label}**<br/><div class='chat-message'>{msg['content']}</div>", unsafe_allow_html=True)
+    if rag_error:
+        st.warning(f"Co-pilot unavailable: {rag_error}")
+    elif not rag.ready:
+        st.warning("Database unavailable. Run `python rag/ingest_thermal_papers.py` to index literature.")
+    else:
+        st.caption(f"Knowledge base active: {rag.chunk_count()} vectors loaded.")
 
-if prompt := st.chat_input("Enter query (e.g. 'Analyze the CTE failure zones in this layout')..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    st.rerun()
+    show_model_settings = st.checkbox("Show model settings", value=False)
+    if show_model_settings:
+        copilot_model = st.text_input(
+            "Local Ollama model",
+            value="gemma4:e4b",
+            help="Use any local Ollama chat model, for example gemma4:e4b, granite3.2-vision, qwen3.5:9b, or llama3.1.",
+        )
+    if "copilot_model" not in locals():
+        copilot_model = "gemma4:e4b"
 
-# If last message is user, generate response
-if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
-    user_prompt = st.session_state.messages[-1]["content"]
+    quick_question = st.text_input(
+        "Ask about this layout",
+        value="What does the heat map indicate and what should I change first?",
+    )
+    if st.button("Ask copilot"):
+        sim_state = st.session_state.design_state if st.session_state.simulation_run else {
+            "status": "No simulation has been run yet.",
+            "components": component_records(edited_df),
+        }
+        with st.spinner("Reading simulation state..."):
+            try:
+                if rag is None:
+                    response = f"[ERROR] RAG execution failed: {rag_error}"
+                else:
+                    response = rag.ask(
+                        query=quick_question,
+                        sim_state=sim_state,
+                        heatmap_b64=st.session_state.heatmap_b64,
+                        history=[],
+                        provider="ollama",
+                        api_key=copilot_model,
+                    )
+            except Exception as e:
+                response = f"[ERROR] RAG execution failed: {e}"
 
-    sim_state = st.session_state.design_state if st.session_state.simulation_run else {
-        "status": "No simulation has been run yet.",
-        "components": component_records(edited_df),
-    }
+        st.session_state.latest_copilot_question = quick_question
+        st.session_state.latest_copilot_answer = response
+        st.session_state.messages.append({"role": "user", "content": quick_question})
+        st.session_state.messages.append({"role": "assistant", "content": response})
 
-    with st.spinner("Processing analysis query..."):
-        try:
-            if rag is None:
-                response = f"[ERROR] RAG execution failed: {rag_error}"
-            else:
-                response = rag.ask(
-                    query       = user_prompt,
-                    sim_state   = sim_state,
-                    heatmap_b64 = st.session_state.heatmap_b64,
-                    history     = st.session_state.messages[:-1],
-                    provider    = "ollama",
-                    api_key     = copilot_model,
-                )
-        except Exception as e:
-            response = f"[ERROR] RAG execution failed: {e}"
+    if st.session_state.latest_copilot_answer:
+        st.caption(st.session_state.latest_copilot_question)
+        st.markdown(
+            f"<div class='chat-message'>{st.session_state.latest_copilot_answer}</div>",
+            unsafe_allow_html=True,
+        )
 
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    st.rerun()
-
-st.divider()
-st.subheader("Source Finder")
-st.caption("Find candidate papers, datasheets, and standards before deciding what to ingest into Qdrant.")
-
-with st.expander("Perplexity source discovery", expanded=False):
+with st.expander("Knowledge sources", expanded=False):
+    st.caption("Optional source discovery for papers, datasheets, and standards before ingestion into Qdrant.")
     api_from_env = os.getenv("PERPLEXITY_API_KEY", "")
     if not api_from_env:
         st.warning("Set `PERPLEXITY_API_KEY` in the environment, or paste a temporary key below.")
@@ -1029,7 +1186,7 @@ with st.expander("Perplexity source discovery", expanded=False):
         ],
     )
     source_goal = st.text_input(
-        "What should the source help with?",
+        "Source goal",
         value="grounding copilot recommendations with variables, equations, and experimental data",
     )
     source_mode = st.radio("Search mode", ["academic", "web"], horizontal=True)
@@ -1046,10 +1203,22 @@ with st.expander("Perplexity source discovery", expanded=False):
         source_goal,
         design_state=st.session_state.design_state if st.session_state.design_state else None,
     )
-    with st.expander("Generated search prompt", expanded=False):
+    show_source_prompt = st.checkbox("Show generated search prompt", value=False)
+    if show_source_prompt:
         st.code(source_query, language="text")
 
-    if st.button("FIND SOURCES"):
+    c_find, c_evidence = st.columns(2)
+    with c_find:
+        find_sources = st.button("Find sources")
+    with c_evidence:
+        get_evidence = st.button("Get grounded recommendation")
+
+    evidence_question = st.text_input(
+        "Evidence question",
+        value="What does outside evidence suggest I should test next for this thermal result?",
+    )
+
+    if find_sources:
         key = temp_key or api_from_env
         try:
             with st.spinner("Searching source candidates..."):
@@ -1061,6 +1230,29 @@ with st.expander("Perplexity source discovery", expanded=False):
                 )
         except Exception as e:
             st.session_state.source_finder_result = {"error": str(e)}
+
+    if get_evidence:
+        key = temp_key or api_from_env
+        try:
+            with st.spinner("Getting structured Sonar evidence and asking Gemma..."):
+                evidence_package = search_perplexity_structured_evidence(
+                    source_query,
+                    api_key=key,
+                    search_mode=source_mode,
+                    model=source_model,
+                )
+                gemma_answer = ask_gemma_with_evidence(
+                    evidence_question,
+                    st.session_state.design_state,
+                    evidence_package,
+                    copilot_model if "copilot_model" in locals() else "gemma4:e4b",
+                )
+                st.session_state.evidence_recommendation = {
+                    "evidence_package": evidence_package,
+                    "gemma_answer": gemma_answer,
+                }
+        except Exception as e:
+            st.session_state.evidence_recommendation = {"error": str(e)}
 
     result = st.session_state.get("source_finder_result")
     if result:
@@ -1087,13 +1279,13 @@ with st.expander("Perplexity source discovery", expanded=False):
 
             citations = result.get("citations", [])
             if citations:
-                with st.expander("Citation URLs", expanded=False):
+                if st.checkbox("Show citation URLs", value=False):
                     for url in citations:
                         st.markdown(f"- [{url}]({url})")
 
             related = result.get("related_questions", [])
             if related:
-                with st.expander("Related follow-up searches", expanded=False):
+                if st.checkbox("Show related follow-up searches", value=False):
                     for question in related:
                         st.markdown(f"- {question}")
 
@@ -1101,3 +1293,19 @@ with st.expander("Perplexity source discovery", expanded=False):
                 "Next iteration: add an `Ingest selected source` action that downloads approved open-access PDFs, "
                 "parses them with Docling, embeds chunks, and stores them in Qdrant."
             )
+
+    evidence_result = st.session_state.get("evidence_recommendation")
+    if evidence_result:
+        st.markdown("#### Evidence-Grounded Recommendation")
+        if evidence_result.get("error"):
+            st.error(evidence_result["error"])
+        else:
+            st.markdown(evidence_result["gemma_answer"])
+            package = evidence_result["evidence_package"]
+            if st.checkbox("Show structured Sonar evidence", value=False):
+                st.json(package.get("evidence", {}))
+            citations = package.get("citations", [])
+            if citations:
+                if st.checkbox("Show evidence citation URLs", value=False):
+                    for url in citations:
+                        st.markdown(f"- [{url}]({url})")
