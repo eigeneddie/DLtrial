@@ -80,7 +80,7 @@ TSV_H_FACTOR = 8.0
 # DATASET PARAMETERS
 # ==============================================================================
 
-NUM_SAMPLES = 100   # fast test batch (increase to 5_000 for full training run)
+NUM_SAMPLES = 1000   # fast test batch (increase to 5_000 for full training run)
 OUTPUT_DIR  = "."
 
 # Power ranges per die type [W]
