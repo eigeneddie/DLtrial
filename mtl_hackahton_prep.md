@@ -38,3 +38,24 @@ Specific requirements:
 3. Ensure the code is heavily commented.
 4. **Normalization:** Ensure the script normalizes all values in the `X_data` and `Y_data` arrays to a `[0, 1]` scale before saving them using Min-Max scaling. 
 5. **Data Dictionary:** Have the Python script automatically generate and save a `readme.txt` file alongside the `.npy` files. The readme must document the channel mappings (0: Power, 1: Material k, 2: Cooling h) and record the exact Min and Max values used for the normalization so the ML engineer can un-scale the predictions later.
+
+## 7. Hardware realism guideline from the hackathon
+- Synthesizability: If your project involves AI-generated circuit cells or device models, it should be synthetically viable. A "cool" design that cannot be physically realized on a chip or FPGA is a failure of engineering.
+- Resource Awareness: Bonus points are awarded for AI models that are "Hardware Aware"—designs that consider power consumption (µW/mW) and thermal constraints.
+- The Demo: You must provide a "Proof of Concept." If you don't have physical devices (obviously!), you must show a high-fidelity simulation or clear datasheet of the system.
+
+## 8. Originality
+- The "Fresh Start" Rule: While you may use open-source libraries, frameworks, and pre-trained models, the core logic of your project must be developed during the hackathon.
+- Attribution: Any pre-existing IP or third-party datasets used must be clearly disclosed in your final presentation.
+
+
+## 9. Judging criteria 
+The projects will be judged based on Progress During The Event, all the projects must be related to microelectronics.  
+
+Each team should submit: project title and one description paragraph before Sunday noon. 
+Based on that order, each team will give a 5-10 min presentation with Q&A. 
+
+Projects in each track will be evaluated based on:
+Impact potential: feasibility and scalability
+Innovation and originality: highlight your original ideas and approaches
+Validation: clean benchmark, testing and show comparative performance
