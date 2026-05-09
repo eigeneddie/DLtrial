@@ -59,3 +59,32 @@ Projects in each track will be evaluated based on:
 Impact potential: feasibility and scalability
 Innovation and originality: highlight your original ideas and approaches
 Validation: clean benchmark, testing and show comparative performance
+
+
+## 10 Relevant SOTA papers regarding 2.5D chip layout optimization
+Here are the top 5 papers that define the state-of-the-art for 2.5D chiplet floorplanning, balancing both thermal and latency constraints:
+
+1. DiffChip: Thermally Aware Chip Placement with Automatic Differentiation (2025)
+The Core Idea: This paper tackles the slow convergence of traditional guess-and-check methods (like Simulated Annealing) by proposing a placement algorithm based entirely on automatic differentiation (AD).
+
+Hackathon Relevance: It relies on a differentiable thermal solver that computes the exact sensitivity of the temperature map with respect to the X and Y coordinates of the chiplets. Since your team is already using a PyTorch U-Net, this paper provides the blueprint for how you might use gradients to automatically "push" chiplets away from thermal hotspots while mathematically minimizing total wirelength.
+
+2. ChipletPart: Cost-Aware Partitioning for 2.5D Systems (2025/2026)
+The Core Idea: This paper introduces a partitioner that specifically addresses the harsh physical constraints of 2.5D systems, most notably the limited physical "reach" of inter-chiplet I/O transceivers.
+
+Hackathon Relevance: It combines genetic algorithms with a Simulated Annealing-based floorplanner. It proves that accounting for the physical limits of 2.5D interconnects is mandatory, showing that state-of-the-art min-cut partitioners often yield layouts that are physically impossible to route. It also provides open-source tools and cost models you could potentially adapt.
+
+3. TAP-2.5D: A Thermally-Aware Chiplet Placement Methodology for 2.5D Systems (2021)
+The Core Idea: While slightly older, this is a foundational paper for your exact problem. It explicitly argues against tightly packing chiplets (which is standard in 2D design), proving that strategically inserting physical spacing jointly minimizes temperature and total wirelength.
+
+Hackathon Relevance: It introduces a highly practical data structure called the "Occupation Chiplet Matrix" (OCM) to represent unrestricted placements. In one case study, their methodology lowered an infeasible temperature by 20°C and improved the thermal design power envelope by 150W. The OCM concept is a very clean way to represent your layout grid in your Python backend.
+
+4. Effects of Poor Workload Partitioning on System Performance for Chiplet-Based Systems (2026)
+The Core Idea: A deep dive strictly into the latency and communication side of the equation. It demonstrates through experimental analysis that naive, suboptimal placement can increase inter-chiplet communication latency by up to 10x and cause severe network congestion.
+
+Hackathon Relevance: It validates exactly why your team must include a Latency Score. It outlines how proper partitioning algorithms can achieve an 87.4% reduction in inter-chiplet traffic and improve system throughput by nearly 9x, giving you hard numbers to quote in your final presentation.
+
+5. The Survey of 2.5D Integrated Architecture: An EDA Perspective (2025)
+The Core Idea: A comprehensive, up-to-date overview summarizing current methodologies and future directions for chiplet architectures strictly from an Electronic Design Automation (EDA) standpoint.
+
+Hackathon Relevance: This is the perfect backgrounder for the entire team to skim. It connects the front-end architectural choices to back-end physical design and packaging, providing the overarching context of why "Shift-Left" thermal and latency surrogates like yours are currently in such high demand by major foundries.
