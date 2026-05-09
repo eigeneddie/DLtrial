@@ -1,4 +1,8 @@
 matplotlib==3.9.4
 numpy==2.0.2
+pandas
+pillow
+streamlit
+streamlit-image-coordinates==0.4.0
 torch==2.8.0
 torchvision==0.23.0
