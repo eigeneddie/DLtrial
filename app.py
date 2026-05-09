@@ -16,8 +16,12 @@ Run:
 
 import base64
 import io
+import json
+import os
+import requests
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -33,7 +37,7 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from data_generator import (
-    GRID_SIZE, H_REF, MATERIALS, T_AMBIENT, TSV_H_FACTOR,
+    CTE_CHIP_PPM, CTE_STRESS_THRESHOLD, GRID_SIZE, H_REF, MATERIALS, T_AMBIENT, TSV_H_FACTOR,
     _place_rect, compute_cte_stress, fdm_steady_state,
 )
 
@@ -44,6 +48,7 @@ except Exception:
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "thermal_surrogate.pth"
+PERPLEXITY_ENDPOINT = "https://api.perplexity.ai/v1/sonar"
 
 X_SCALES = {
     "Q": (0.0, 149.9663),
@@ -226,6 +231,8 @@ if "sim_grids" not in st.session_state:
     st.session_state.sim_grids = {}
 if "validation" not in st.session_state:
     st.session_state.validation = None
+if "design_state" not in st.session_state:
+    st.session_state.design_state = {}
 if "last_blueprint_click" not in st.session_state:
     st.session_state.last_blueprint_click = None
 
@@ -355,6 +362,236 @@ def build_validation_result(ai_map, fdm_map, ai_ms, fdm_ms):
         "peak_error": peak_error,
         "verdict": verdict,
         "verdict_detail": verdict_detail,
+    }
+
+
+def top_hotspots(temp_map, count=5, min_separation=4):
+    candidates = np.dstack(np.unravel_index(np.argsort(temp_map.ravel())[::-1], temp_map.shape))[0]
+    hotspots = []
+    for row, col in candidates:
+        temp = float(temp_map[row, col])
+        if any(abs(int(row) - h["row"]) + abs(int(col) - h["col"]) < min_separation for h in hotspots):
+            continue
+        hotspots.append({"row": int(row), "col": int(col), "temperature_C": round(temp, 3)})
+        if len(hotspots) >= count:
+            break
+    return hotspots
+
+
+def component_records(components_df):
+    records = []
+    for idx, row in components_df.reset_index(drop=True).iterrows():
+        try:
+            width = int(row["Width"])
+            height = int(row["Height"])
+            x_col = int(row["X_Col"])
+            y_row = int(row["Y_Row"])
+            power = float(row["Power_W"])
+            records.append({
+                "id": int(idx + 1),
+                "type": str(row["Type"]),
+                "power_W": round(power, 3),
+                "width_cells": width,
+                "height_cells": height,
+                "x_col": x_col,
+                "y_row": y_row,
+                "center_col": round(x_col + width / 2, 2),
+                "center_row": round(y_row + height / 2, 2),
+                "area_cells": int(width * height),
+                "power_density_W_per_cell": round(power / max(width * height, 1), 4),
+            })
+        except Exception:
+            continue
+    return records
+
+
+def nearest_component(row, col, components):
+    if not components:
+        return None
+    distances = [
+        (abs(row - comp["center_row"]) + abs(col - comp["center_col"]), comp)
+        for comp in components
+    ]
+    _, comp = min(distances, key=lambda item: item[0])
+    return {"id": comp["id"], "type": comp["type"]}
+
+
+def build_structured_design_state(
+    components_df,
+    q_grid,
+    k_grid,
+    h_grid,
+    temp_map,
+    stress_map,
+    flag_map,
+    material_choice,
+    tsv_count,
+    tsv_orientation,
+    solver_mode,
+    runtime_ms,
+    validation_result=None,
+):
+    active_cells = q_grid > 0
+    hotspot_list = top_hotspots(temp_map)
+    components = component_records(components_df)
+    for hot in hotspot_list:
+        hot["nearest_component"] = nearest_component(hot["row"], hot["col"], components)
+
+    grad_row, grad_col = np.gradient(temp_map)
+    grad_mag = np.sqrt(grad_row ** 2 + grad_col ** 2)
+    power_by_type = {}
+    for comp in components:
+        power_by_type[comp["type"]] = round(power_by_type.get(comp["type"], 0.0) + comp["power_W"], 3)
+
+    state = {
+        "schema_version": "1.0",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "design_problem": "2.5D chiplet thermal-mechanical co-design",
+        "grid": {
+            "rows": GRID_SIZE,
+            "cols": GRID_SIZE,
+            "coordinate_system": "row/col indices, origin at top-left",
+        },
+        "engine": {
+            "selected_mode": solver_mode,
+            "runtime_ms": round(float(runtime_ms), 3),
+            "ai_model": "thermal_surrogate.pth" if solver_mode in {"AI Surrogate", "Validation"} else None,
+            "physics_reference": "2D finite-difference steady-state heat equation",
+        },
+        "materials": {
+            "substrate": material_choice,
+            "substrate_k_W_per_mK": float(MATERIALS[material_choice][0]),
+            "substrate_cte_ppm_per_C": float(MATERIALS[material_choice][1]),
+            "chiplet_cte_ppm_per_C": float(CTE_CHIP_PPM),
+            "ambient_temperature_C": float(T_AMBIENT),
+        },
+        "cooling": {
+            "tsv_strip_count": int(tsv_count),
+            "tsv_orientation": str(tsv_orientation),
+            "baseline_h_W_per_m2K": float(H_REF),
+            "max_h_W_per_m2K": float(h_grid.max()),
+            "tsv_h_enhancement_factor": float(TSV_H_FACTOR),
+            "enhanced_cooling_cell_fraction": round(float(np.mean(h_grid > H_REF)), 5),
+        },
+        "components": components,
+        "layout_summary": {
+            "component_count": len(components),
+            "component_counts_by_type": {str(k): int(v) for k, v in components_df["Type"].value_counts().to_dict().items()},
+            "total_power_W": round(float(q_grid[active_cells].sum()), 3) if np.any(active_cells) else 0.0,
+            "power_by_type_W": power_by_type,
+            "active_area_cells": int(active_cells.sum()),
+            "active_area_fraction": round(float(active_cells.mean()), 5),
+        },
+        "thermal_metrics": {
+            "min_temperature_C": round(float(temp_map.min()), 3),
+            "mean_temperature_C": round(float(temp_map.mean()), 3),
+            "p95_temperature_C": round(float(np.percentile(temp_map, 95)), 3),
+            "peak_temperature_C": round(float(temp_map.max()), 3),
+            "delta_peak_above_ambient_C": round(float(temp_map.max() - T_AMBIENT), 3),
+            "max_gradient_C_per_cell": round(float(grad_mag.max()), 3),
+            "hotspots": hotspot_list,
+        },
+        "mechanical_metrics": {
+            "stress_model": "|CTE_chip - CTE_substrate| * (T - T_ambient)",
+            "cte_stress_threshold_ppm_C": float(CTE_STRESS_THRESHOLD),
+            "max_stress_ppm_C": round(float(stress_map.max()), 3),
+            "mean_stress_ppm_C": round(float(stress_map.mean()), 3),
+            "failure_cell_count": int(flag_map.sum()),
+            "failure_area_fraction": round(float(flag_map.mean()), 5),
+        },
+        "recommendation_variables": {
+            "layout_controls": ["component type", "x_col", "y_row", "width", "height", "power_W"],
+            "material_controls": ["substrate material", "thermal conductivity k", "CTE"],
+            "cooling_controls": ["TSV strip count", "TSV orientation", "local convection h"],
+            "objectives": ["minimize peak temperature", "minimize CTE failure cells", "maximize AI/FDM agreement"],
+        },
+    }
+
+    if validation_result:
+        state["validation"] = {
+            "reference": "FDM Physics",
+            "surrogate": "AI Surrogate",
+            "ai_peak_temperature_C": round(float(validation_result["peak_ai"]), 3),
+            "fdm_peak_temperature_C": round(float(validation_result["peak_fdm"]), 3),
+            "peak_error_C": round(float(validation_result["peak_error"]), 3),
+            "mae_C": round(float(validation_result["mae"]), 3),
+            "rmse_C": round(float(validation_result["rmse"]), 3),
+            "max_error_C": round(float(validation_result["max_error"]), 3),
+            "ai_runtime_ms": round(float(validation_result["ai_ms"]), 3),
+            "fdm_runtime_ms": round(float(validation_result["fdm_ms"]), 3),
+            "runtime_ratio_fdm_over_ai": round(float(validation_result["speedup"]), 3),
+            "verdict": validation_result["verdict"],
+        }
+
+    return state
+
+
+def build_source_query(topic, source_goal, design_state=None):
+    context_bits = []
+    if design_state:
+        material = design_state.get("materials", {}).get("substrate")
+        peak = design_state.get("thermal_metrics", {}).get("peak_temperature_C")
+        failures = design_state.get("mechanical_metrics", {}).get("failure_cell_count")
+        if material:
+            context_bits.append(f"current substrate={material}")
+        if peak is not None:
+            context_bits.append(f"peak temperature={peak} C")
+        if failures is not None:
+            context_bits.append(f"CTE failure cells={failures}")
+
+    context = "; ".join(context_bits) if context_bits else "no current simulation context"
+    return (
+        f"Find high-quality sources for a 2.5D chiplet packaging thermal design copilot.\n"
+        f"Topic: {topic}\n"
+        f"Goal: {source_goal}\n"
+        f"Current design context: {context}\n\n"
+        "Prioritize open-access papers, arXiv papers, vendor datasheets, standards, "
+        "and experimental thermal packaging references. For each source, state the "
+        "thermal/material variables it contains, why it matters for a 2.5D/3D chiplet "
+        "design app, and whether it looks suitable for Docling ingestion."
+    )
+
+
+def search_perplexity_sources(query, api_key, search_mode="academic", model="sonar-pro"):
+    if not api_key:
+        raise RuntimeError("PERPLEXITY_API_KEY is not configured.")
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a source discovery assistant for microelectronics packaging. "
+                    "Return concise, source-grounded results. Do not invent citations."
+                ),
+            },
+            {"role": "user", "content": query},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 900,
+        "search_mode": search_mode,
+        "return_related_questions": True,
+    }
+    resp = requests.post(
+        PERPLEXITY_ENDPOINT,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=45,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Perplexity API error: {resp.status_code} {resp.text[:300]}")
+    data = resp.json()
+    content = ""
+    choices = data.get("choices", [])
+    if choices:
+        content = choices[0].get("message", {}).get("content", "")
+    return {
+        "answer": content,
+        "citations": data.get("citations") or [],
+        "search_results": data.get("search_results") or [],
+        "related_questions": data.get("related_questions") or [],
+        "usage": data.get("usage") or {},
     }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -504,11 +741,28 @@ if run_sim or run_validation:
             solver_mode = "FDM Physics"
             T_map, elapsed_ms = run_engine("FDM Physics", Q_grid, k_grid, h_grid)
         stress_map, flag_map = compute_cte_stress(T_map, k_grid)
+        effective_engine = "Validation" if run_validation else solver_mode
+        design_state = build_structured_design_state(
+            components_df=edited_df,
+            q_grid=Q_grid,
+            k_grid=k_grid,
+            h_grid=h_grid,
+            temp_map=T_map,
+            stress_map=stress_map,
+            flag_map=flag_map,
+            material_choice=material_choice,
+            tsv_count=num_tsvs,
+            tsv_orientation=tsv_orientation,
+            solver_mode=effective_engine,
+            runtime_ms=elapsed_ms,
+            validation_result=validation_result,
+        )
 
         # Save state
         st.session_state.T_map = T_map
         st.session_state.flag_map = flag_map
         st.session_state.validation = validation_result
+        st.session_state.design_state = design_state
         st.session_state.sim_grids = {
             "Q": Q_grid.copy(),
             "k": k_grid.copy(),
@@ -523,7 +777,7 @@ if run_sim or run_validation:
             "delta_T": float(T_map.max() - T_AMBIENT),
             "material": material_choice,
             "tsvs": num_tsvs,
-            "engine": "Validation" if run_validation else solver_mode,
+            "engine": effective_engine,
             "runtime_ms": float(elapsed_ms),
             "validation_verdict": validation_result["verdict"] if validation_result else "",
         }
@@ -679,6 +933,9 @@ if st.session_state.simulation_run:
                 f"Runtime ratio **{validation['speedup']:.1f}x**"
             )
 
+    with st.expander("Structured design state for GenAI", expanded=False):
+        st.json(st.session_state.design_state)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PART 3 — ENGINEERING CONSOLE (CO-PILOT)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -708,6 +965,12 @@ else:
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "Analysis console initialized. Awaiting queries."}]
 
+copilot_model = st.text_input(
+    "Local Ollama model",
+    value="gemma4:e4b",
+    help="Use any local Ollama chat model, for example gemma4:e4b, granite3.2-vision, qwen3.5:9b, or llama3.1.",
+)
+
 for msg in st.session_state.messages:
     role_label = "ANALYSIS ASSISTANT" if msg["role"] == "assistant" else "ENGINEER"
     st.markdown(f"**{role_label}**<br/><div class='chat-message'>{msg['content']}</div>", unsafe_allow_html=True)
@@ -720,9 +983,10 @@ if prompt := st.chat_input("Enter query (e.g. 'Analyze the CTE failure zones in 
 if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
     user_prompt = st.session_state.messages[-1]["content"]
 
-    sim_state = st.session_state.sim_metrics if st.session_state.simulation_run else {}
-    # Inject current layout data into sim state
-    sim_state["components"] = edited_df.to_dict("records")
+    sim_state = st.session_state.design_state if st.session_state.simulation_run else {
+        "status": "No simulation has been run yet.",
+        "components": component_records(edited_df),
+    }
 
     with st.spinner("Processing analysis query..."):
         try:
@@ -734,10 +998,106 @@ if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] 
                     sim_state   = sim_state,
                     heatmap_b64 = st.session_state.heatmap_b64,
                     history     = st.session_state.messages[:-1],
-                    provider    = "gemini",
+                    provider    = "ollama",
+                    api_key     = copilot_model,
                 )
         except Exception as e:
             response = f"[ERROR] RAG execution failed: {e}"
 
     st.session_state.messages.append({"role": "assistant", "content": response})
     st.rerun()
+
+st.divider()
+st.subheader("Source Finder")
+st.caption("Find candidate papers, datasheets, and standards before deciding what to ingest into Qdrant.")
+
+with st.expander("Perplexity source discovery", expanded=False):
+    api_from_env = os.getenv("PERPLEXITY_API_KEY", "")
+    if not api_from_env:
+        st.warning("Set `PERPLEXITY_API_KEY` in the environment, or paste a temporary key below.")
+
+    source_topic = st.selectbox(
+        "Source topic",
+        [
+            "2.5D chiplet thermal modeling",
+            "TSV thermal cooling and heat extraction",
+            "HBM and logic thermal crosstalk",
+            "AlN silicon glass interposer material properties",
+            "CTE mismatch microbump fatigue reliability",
+            "TIM heat spreader package thermal resistance",
+            "AI surrogate models for thermal simulation",
+        ],
+    )
+    source_goal = st.text_input(
+        "What should the source help with?",
+        value="grounding copilot recommendations with variables, equations, and experimental data",
+    )
+    source_mode = st.radio("Search mode", ["academic", "web"], horizontal=True)
+    source_model = st.selectbox("Perplexity model", ["sonar-pro", "sonar"], index=0)
+    temp_key = st.text_input(
+        "Temporary Perplexity API key",
+        value="",
+        type="password",
+        help="Leave empty to use PERPLEXITY_API_KEY from the environment.",
+    )
+
+    source_query = build_source_query(
+        source_topic,
+        source_goal,
+        design_state=st.session_state.design_state if st.session_state.design_state else None,
+    )
+    with st.expander("Generated search prompt", expanded=False):
+        st.code(source_query, language="text")
+
+    if st.button("FIND SOURCES"):
+        key = temp_key or api_from_env
+        try:
+            with st.spinner("Searching source candidates..."):
+                st.session_state.source_finder_result = search_perplexity_sources(
+                    source_query,
+                    api_key=key,
+                    search_mode=source_mode,
+                    model=source_model,
+                )
+        except Exception as e:
+            st.session_state.source_finder_result = {"error": str(e)}
+
+    result = st.session_state.get("source_finder_result")
+    if result:
+        if result.get("error"):
+            st.error(result["error"])
+        else:
+            st.markdown("#### Source Discovery Summary")
+            st.markdown(result.get("answer", "No summary returned."))
+
+            search_results = result.get("search_results", [])
+            if search_results:
+                st.markdown("#### Candidate Sources")
+                for idx, item in enumerate(search_results[:8], start=1):
+                    title = item.get("title") or f"Source {idx}"
+                    url = item.get("url") or ""
+                    snippet = item.get("snippet") or ""
+                    date = item.get("date") or item.get("last_updated") or ""
+                    label = f"{idx}. [{title}]({url})" if url else f"{idx}. {title}"
+                    st.markdown(label)
+                    if date:
+                        st.caption(f"Date: {date}")
+                    if snippet:
+                        st.caption(snippet)
+
+            citations = result.get("citations", [])
+            if citations:
+                with st.expander("Citation URLs", expanded=False):
+                    for url in citations:
+                        st.markdown(f"- [{url}]({url})")
+
+            related = result.get("related_questions", [])
+            if related:
+                with st.expander("Related follow-up searches", expanded=False):
+                    for question in related:
+                        st.markdown(f"- {question}")
+
+            st.info(
+                "Next iteration: add an `Ingest selected source` action that downloads approved open-access PDFs, "
+                "parses them with Docling, embeds chunks, and stores them in Qdrant."
+            )
