@@ -259,6 +259,27 @@ st.markdown("""
         color: #334155;
     }
 
+    /* Segmented control — base label style */
+    [data-testid="stSegmentedControl"] label {
+        font-weight: 600 !important;
+        transition: background 0.15s, color 0.15s;
+    }
+    [data-testid="stSegmentedControl"] label[data-chip="CPU"] { color: #1a4fba !important; }
+    [data-testid="stSegmentedControl"] label[data-chip="CPU"][aria-checked="true"],
+    [data-testid="stSegmentedControl"] label[data-chip="CPU"]:hover {
+        background-color: #4285F4 !important; color: white !important;
+    }
+    [data-testid="stSegmentedControl"] label[data-chip="GPU"] { color: #1a6630 !important; }
+    [data-testid="stSegmentedControl"] label[data-chip="GPU"][aria-checked="true"],
+    [data-testid="stSegmentedControl"] label[data-chip="GPU"]:hover {
+        background-color: #34A853 !important; color: white !important;
+    }
+    [data-testid="stSegmentedControl"] label[data-chip="HBM"] { color: #b45000 !important; }
+    [data-testid="stSegmentedControl"] label[data-chip="HBM"][aria-checked="true"],
+    [data-testid="stSegmentedControl"] label[data-chip="HBM"]:hover {
+        background-color: #FB8C00 !important; color: white !important;
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -267,12 +288,14 @@ st.markdown("""
 # ═══════════════════════════════════════════════════════════════════════════
 
 if "components_df" not in st.session_state:
+    # Multi-GPU 2.5D layout — GPU0 | CPU | GPU1, HBMs flanking (50mm CoWoS board)
     st.session_state.components_df = pd.DataFrame([
-        {"Type": "Logic", "Power_W": 120.0, "Width": 8, "Height": 8, "X_Col": 28, "Y_Row": 28},
-        {"Type": "Memory", "Power_W": 20.0, "Width": 4, "Height": 4, "X_Col": 12, "Y_Row": 12},
-        {"Type": "Memory", "Power_W": 20.0, "Width": 4, "Height": 4, "X_Col": 48, "Y_Row": 12},
-        {"Type": "Memory", "Power_W": 20.0, "Width": 4, "Height": 4, "X_Col": 12, "Y_Row": 48},
-        {"Type": "Memory", "Power_W": 20.0, "Width": 4, "Height": 4, "X_Col": 48, "Y_Row": 48},
+        {"Type": "CPU", "Power_W": 105.0, "Width": 15, "Height": 15, "X_Col": 25, "Y_Row": 24},
+        {"Type": "GPU", "Power_W": 295.0, "Width": 23, "Height": 23, "X_Col":  1, "Y_Row": 20},
+        {"Type": "GPU", "Power_W": 295.0, "Width": 23, "Height": 23, "X_Col": 40, "Y_Row": 20},
+        {"Type": "HBM", "Power_W":  20.0, "Width": 10, "Height": 15, "X_Col": 27, "Y_Row":  2},
+        {"Type": "HBM", "Power_W":  20.0, "Width": 10, "Height": 15, "X_Col":  1, "Y_Row": 45},
+        {"Type": "HBM", "Power_W":  20.0, "Width": 10, "Height": 15, "X_Col": 53, "Y_Row": 45},
     ])
 
 if "simulation_run" not in st.session_state:
@@ -294,10 +317,15 @@ if "design_state" not in st.session_state:
 if "last_blueprint_click" not in st.session_state:
     st.session_state.last_blueprint_click = None
 
+# Board: 50mm × 50mm CoWoS-style interposer → 1 cell ≈ 0.78 mm (GRID_SIZE=64)
+# Dimensions from TABLE II (Multi-GPU System, Chen et al.)
+BOARD_MM = 50.0
+CELL_MM = BOARD_MM / GRID_SIZE  # 0.78125 mm/cell
+
 COMPONENT_PRESETS = {
-    "Logic": {"Power_W": 120.0, "Width": 8, "Height": 8},
-    "Memory": {"Power_W": 20.0, "Width": 4, "Height": 4},
-    "Controller": {"Power_W": 45.0, "Width": 5, "Height": 5},
+    "CPU":  {"Power_W": 105.0, "Width": 15, "Height": 15},   # 12×12 mm
+    "GPU":  {"Power_W": 295.0, "Width": 23, "Height": 23},   # 18.2×18.2 mm
+    "HBM":  {"Power_W":  20.0, "Width": 10, "Height": 15},   # 7.75×11.87 mm
 }
 
 
@@ -349,24 +377,45 @@ def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_p
         draw.line([(0, pos), (size_px, pos)], fill=color, width=1)
 
     colors = {
-        "Logic": (30, 136, 229, 215),
-        "Memory": (76, 175, 80, 215),
-        "Controller": (255, 183, 77, 215),
+        "CPU": (66, 133, 244, 215),   # Google blue
+        "GPU": (52, 168, 83, 215),    # Google green
+        "HBM": (251, 140, 0, 215),    # amber orange
     }
     outlines = {
-        "Logic": (30, 64, 175, 255),
-        "Memory": (22, 101, 52, 255),
-        "Controller": (180, 83, 9, 255),
+        "CPU": (25,  75, 180, 255),
+        "GPU": (18,  90,  45, 255),
+        "HBM": (180,  80,   0, 255),
     }
-    for _, row in components_df.iterrows():
+    type_counters = {}
+    for _, row in components_df.reset_index(drop=True).iterrows():
         try:
             comp_type = str(row["Type"])
+            type_idx = type_counters.get(comp_type, 0)
+            type_counters[comp_type] = type_idx + 1
+
             x0 = int(row["X_Col"]) * cell
             y0 = int(row["Y_Row"]) * cell
             x1 = min(size_px - 1, (int(row["X_Col"]) + int(row["Width"])) * cell - 1)
             y1 = min(size_px - 1, (int(row["Y_Row"]) + int(row["Height"])) * cell - 1)
-            draw.rectangle([x0, y0, x1, y1], fill=colors.get(comp_type, (30, 136, 229, 215)))
-            draw.rectangle([x0, y0, x1, y1], outline=outlines.get(comp_type, (220, 220, 220, 255)), width=2)
+            draw.rectangle([x0, y0, x1, y1], fill=colors.get(comp_type, (100, 100, 200, 215)))
+            draw.rectangle([x0, y0, x1, y1], outline=outlines.get(comp_type, (60, 60, 160, 255)), width=2)
+
+            label = str(type_idx)
+            cx = (x0 + x1) // 2
+            cy = (y0 + y1) // 2
+            font_size = max(12, min(cell * int(row["Width"]) // 2, 36))
+            try:
+                from PIL import ImageFont
+                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
+            except Exception:
+                font = ImageFont.load_default()
+            bbox = draw.textbbox((0, 0), label, font=font)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            lx = cx - tw // 2
+            ly = cy - th // 2
+            draw.text((lx + 2, ly + 2), label, fill=(0, 0, 0, 160), font=font)
+            draw.text((lx, ly), label, fill=(255, 255, 255, 255), font=font)
         except Exception:
             continue
 
@@ -762,8 +811,29 @@ with col_config:
     place_type = st.segmented_control(
         "Place component",
         options=list(COMPONENT_PRESETS.keys()),
-        default="Logic",
+        default="CPU",
     )
+
+    # Tag each segmented-control label by its text so CSS can color it per chip type
+    st.markdown("""
+    <script>
+    (function tagChipLabels() {
+        const colors = {CPU: "#4285F4", GPU: "#34A853", HBM: "#FB8C00"};
+        const ctrl = document.querySelector('[data-testid="stSegmentedControl"]');
+        if (!ctrl) { setTimeout(tagChipLabels, 150); return; }
+        ctrl.querySelectorAll("label").forEach(lbl => {
+            const txt = lbl.innerText.trim();
+            if (colors[txt]) {
+                lbl.setAttribute("data-chip", txt);
+                const checked = lbl.previousElementSibling?.checked;
+                lbl.style.color = checked ? "white" : colors[txt];
+                lbl.style.fontWeight = "700";
+                if (checked) lbl.style.backgroundColor = colors[txt];
+            }
+        });
+    })();
+    </script>
+    """, unsafe_allow_html=True)
 
     preset = COMPONENT_PRESETS[place_type]
     c_size, c_power = st.columns(2)
@@ -800,7 +870,7 @@ with col_config:
             num_rows="dynamic",
             column_config={
                 "Type": st.column_config.SelectboxColumn(
-                    "Type", help="Component Type", options=["Logic", "Memory", "Controller"], required=True
+                    "Type", help="Component Type", options=["CPU", "GPU", "HBM"], required=True
                 ),
                 "Power_W": st.column_config.NumberColumn("Power (W)", min_value=1.0, max_value=200.0, format="%.1f"),
                 "Width": st.column_config.NumberColumn("Width", min_value=1, max_value=64),
@@ -863,7 +933,12 @@ with col_canvas:
         add_component_from_click(place_type, grid_row, grid_col)
         st.rerun()
 
-    st.caption(f"Selected: {place_type}. Click the package grid to place it. Soft blue bands show TSV cooling regions.")
+    st.caption(
+        f"Selected: **{place_type}** ({COMPONENT_PRESETS[place_type]['Width']*CELL_MM:.1f}×"
+        f"{COMPONENT_PRESETS[place_type]['Height']*CELL_MM:.1f} mm). "
+        f"Board: {BOARD_MM:.0f}×{BOARD_MM:.0f} mm CoWoS interposer · 1 cell = {CELL_MM:.2f} mm. "
+        f"Click to place. Blue bands = TSV cooling."
+    )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # EXECUTION LOGIC
@@ -1086,7 +1161,7 @@ if st.session_state.simulation_run:
             )
 
 # ═══════════════════════════════════════════════════════════════════════════
-# PART 3 — OPTIONAL CO-PILOT
+# PART 3 — DESIGN ASSISTANT
 # ═══════════════════════════════════════════════════════════════════════════
 
 st.divider()
@@ -1100,155 +1175,178 @@ def load_rag():
     except Exception as e:
         return None, str(e)
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "latest_copilot_answer" not in st.session_state:
-    st.session_state.latest_copilot_answer = ""
-if "latest_copilot_question" not in st.session_state:
-    st.session_state.latest_copilot_question = ""
+for _key, _default in [
+    ("messages", []),
+    ("local_answer", ""),
+    ("online_answer", ""),
+    ("online_citations", []),
+    ("copilot_model", "gemma4:e4b"),
+]:
+    if _key not in st.session_state:
+        st.session_state[_key] = _default
 
-with st.expander("Thermal copilot", expanded=False):
-    rag, rag_error = load_rag()
+rag, rag_error = load_rag()
 
-    if rag_error:
-        st.warning(f"Co-pilot unavailable: {rag_error}")
-    elif not rag.ready:
-        st.warning("Database unavailable. Run `python rag/ingest_thermal_papers.py` to index literature.")
-    else:
-        st.caption(f"Knowledge base active: {rag.chunk_count()} vectors loaded.")
+# ── Section header ──────────────────────────────────────────────────────────
+st.subheader("Design Assistant")
+rag_status = ""
+if rag is None or rag_error:
+    rag_status = f"Local RAG unavailable — {rag_error}"
+elif not rag.ready:
+    rag_status = "Local RAG not indexed. Run `python rag/ingest_thermal_papers.py` to activate."
+else:
+    rag_status = f"Local knowledge base active · {rag.chunk_count()} vectors"
+st.caption(rag_status)
 
-    show_model_settings = st.checkbox("Show model settings", value=False)
-    if show_model_settings:
-        copilot_model = st.text_input(
-            "Local Ollama model",
-            value="gemma4:e4b",
-            help="Use any local Ollama chat model, for example gemma4:e4b, granite3.2-vision, qwen3.5:9b, or llama3.1.",
-        )
-    if "copilot_model" not in locals():
-        copilot_model = "gemma4:e4b"
-
-    quick_question = st.text_input(
-        "Ask about this layout",
+# ── Single question bar ─────────────────────────────────────────────────────
+q_col, btn_local, btn_online = st.columns([5, 1, 1.4])
+with q_col:
+    assistant_question = st.text_input(
+        "question",
         value="What does the heat map indicate and what should I change first?",
+        label_visibility="collapsed",
+        placeholder="Ask anything about this thermal layout...",
     )
-    if st.button("Ask copilot"):
-        sim_state = st.session_state.design_state if st.session_state.simulation_run else {
-            "status": "No simulation has been run yet.",
-            "components": component_records(edited_df),
-        }
-        with st.spinner("Reading simulation state..."):
+with btn_local:
+    ask_local = st.button("Ask Copilot", use_container_width=True)
+with btn_online:
+    ask_online = st.button("Ask + Evidence", use_container_width=True)
+
+# ── Assistant settings (collapsed by default) ───────────────────────────────
+with st.expander("Settings", expanded=False):
+    set_c1, set_c2, set_c3 = st.columns(3)
+    with set_c1:
+        st.markdown("**Local model**")
+        copilot_model = st.text_input(
+            "Ollama model",
+            value=st.session_state.copilot_model,
+            help="Any local Ollama chat model, e.g. gemma4:e4b, llama3.1, qwen3.5:9b",
+        )
+        st.session_state.copilot_model = copilot_model
+    with set_c2:
+        st.markdown("**Online search**")
+        source_topic = st.selectbox(
+            "Evidence topic",
+            [
+                "2.5D chiplet thermal modeling",
+                "TSV thermal cooling and heat extraction",
+                "HBM and logic thermal crosstalk",
+                "AlN silicon glass interposer material properties",
+                "CTE mismatch microbump fatigue reliability",
+                "TIM heat spreader package thermal resistance",
+                "AI surrogate models for thermal simulation",
+            ],
+            label_visibility="collapsed",
+        )
+        source_mode = st.radio("Search mode", ["academic", "web"], horizontal=True)
+    with set_c3:
+        st.markdown("**Perplexity API**")
+        api_from_env = os.getenv("PERPLEXITY_API_KEY", "")
+        temp_key = st.text_input(
+            "API key",
+            value="",
+            type="password",
+            help="Perplexity API is paid — get a key at perplexity.ai/api. Leave blank to use PERPLEXITY_API_KEY env var.",
+            label_visibility="collapsed",
+        )
+        source_model = st.selectbox("Model", ["sonar-pro", "sonar"], index=0)
+        if not api_from_env and not temp_key:
+            st.caption("No key set — Ask + Evidence will be disabled.")
+
+# ── Local copilot execution ─────────────────────────────────────────────────
+if ask_local:
+    sim_state = st.session_state.design_state if st.session_state.simulation_run else {
+        "status": "No simulation run yet.",
+        "components": component_records(edited_df),
+    }
+    with st.spinner("Querying local knowledge base..."):
+        try:
+            if rag is None:
+                local_resp = f"RAG unavailable: {rag_error}"
+            elif not rag.ready:
+                local_resp = "Knowledge base not indexed. Run `python rag/ingest_thermal_papers.py` first."
+            else:
+                local_resp = rag.ask(
+                    query=assistant_question,
+                    sim_state=sim_state,
+                    heatmap_b64=st.session_state.heatmap_b64,
+                    history=[],
+                    provider="ollama",
+                    api_key=st.session_state.copilot_model,
+                )
+        except Exception as e:
+            local_resp = f"Error: {e}"
+    st.session_state.local_answer = local_resp
+    st.session_state.messages.append({"role": "user", "content": assistant_question})
+    st.session_state.messages.append({"role": "assistant", "content": local_resp})
+
+# ── Online evidence execution ───────────────────────────────────────────────
+if ask_online:
+    _key = (temp_key if "temp_key" in locals() and temp_key else None) or api_from_env
+    _topic = source_topic if "source_topic" in locals() else "2.5D chiplet thermal modeling"
+    _goal = "grounding copilot recommendations with variables, equations, and experimental data"
+    _mode = source_mode if "source_mode" in locals() else "academic"
+    _model = source_model if "source_model" in locals() else "sonar-pro"
+    source_query = build_source_query(
+        _topic, _goal,
+        design_state=st.session_state.design_state if st.session_state.design_state else None,
+    )
+    if not _key:
+        st.session_state.online_answer = (
+            "No Perplexity API key found. Add `PERPLEXITY_API_KEY` to your environment "
+            "or paste a key in Settings above. The Perplexity API is a paid service — "
+            "sign up at perplexity.ai/api."
+        )
+        st.session_state.online_citations = []
+    else:
+        with st.spinner("Fetching evidence and querying Gemma..."):
             try:
-                if rag is None:
-                    response = f"[ERROR] RAG execution failed: {rag_error}"
-                else:
-                    response = rag.ask(
-                        query=quick_question,
-                        sim_state=sim_state,
-                        heatmap_b64=st.session_state.heatmap_b64,
-                        history=[],
-                        provider="ollama",
-                        api_key=copilot_model,
-                    )
+                evidence_package = search_perplexity_structured_evidence(
+                    source_query, api_key=_key, search_mode=_mode, model=_model,
+                )
+                gemma_answer = ask_gemma_with_evidence(
+                    assistant_question,
+                    st.session_state.design_state,
+                    evidence_package,
+                    st.session_state.copilot_model,
+                )
+                st.session_state.online_answer = gemma_answer
+                st.session_state.online_citations = evidence_package.get("citations", [])
             except Exception as e:
-                response = f"[ERROR] RAG execution failed: {e}"
+                st.session_state.online_answer = f"Error: {e}"
+                st.session_state.online_citations = []
 
-        st.session_state.latest_copilot_question = quick_question
-        st.session_state.latest_copilot_answer = response
-        st.session_state.messages.append({"role": "user", "content": quick_question})
-        st.session_state.messages.append({"role": "assistant", "content": response})
+# ── Side-by-side response area ──────────────────────────────────────────────
+res_local, res_online = st.columns(2)
 
-    if st.session_state.latest_copilot_answer:
-        st.caption(st.session_state.latest_copilot_question)
+with res_local:
+    st.markdown("##### Local Copilot")
+    st.caption("RAG knowledge base + local Ollama model")
+    if st.session_state.local_answer:
         st.markdown(
-            f"<div class='chat-message'>{st.session_state.latest_copilot_answer}</div>",
+            f"<div class='chat-message'>{st.session_state.local_answer}</div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            "<div class='chat-message' style='color:#94A3B8;'>Response appears here after you click **Ask Copilot**.</div>",
             unsafe_allow_html=True,
         )
 
-with st.expander("Online evidence copilot", expanded=False):
-    st.caption("Perplexity gathers current evidence; Gemma turns it into a concise layout recommendation.")
-    api_from_env = os.getenv("PERPLEXITY_API_KEY", "")
-    if not api_from_env:
-        st.warning("Set `PERPLEXITY_API_KEY` in the environment, or paste a temporary key below.")
-
-    source_topic = st.selectbox(
-        "Evidence topic",
-        [
-            "2.5D chiplet thermal modeling",
-            "TSV thermal cooling and heat extraction",
-            "HBM and logic thermal crosstalk",
-            "AlN silicon glass interposer material properties",
-            "CTE mismatch microbump fatigue reliability",
-            "TIM heat spreader package thermal resistance",
-            "AI surrogate models for thermal simulation",
-        ],
-    )
-    temp_key = st.text_input(
-        "Temporary Perplexity API key",
-        value="",
-        type="password",
-        help="Leave empty to use PERPLEXITY_API_KEY from the environment.",
-    )
-    evidence_question = st.text_input(
-        "Question",
-        value="What does outside evidence suggest I should test next for this thermal result?",
-    )
-
-    source_goal = "grounding copilot recommendations with variables, equations, and experimental data"
-    source_mode = "academic"
-    source_model = "sonar-pro"
-    show_online_settings = st.checkbox("Show online search settings", value=False)
-    if show_online_settings:
-        source_goal = st.text_input(
-            "Source goal",
-            value=source_goal,
+with res_online:
+    st.markdown("##### Online Evidence")
+    st.caption("Perplexity academic search → Gemma synthesis")
+    if st.session_state.online_answer:
+        st.markdown(
+            f"<div class='chat-message'>{st.session_state.online_answer}</div>",
+            unsafe_allow_html=True,
         )
-        source_mode = st.radio("Search mode", ["academic", "web"], horizontal=True)
-        source_model = st.selectbox("Perplexity model", ["sonar-pro", "sonar"], index=0)
-
-    source_query = build_source_query(
-        source_topic,
-        source_goal,
-        design_state=st.session_state.design_state if st.session_state.design_state else None,
-    )
-    show_source_prompt = st.checkbox("Show generated search prompt", value=False)
-    if show_source_prompt:
-        st.code(source_query, language="text")
-
-    if st.button("Ask with online evidence"):
-        key = temp_key or api_from_env
-        try:
-            with st.spinner("Searching evidence and asking Gemma..."):
-                evidence_package = search_perplexity_structured_evidence(
-                    source_query,
-                    api_key=key,
-                    search_mode=source_mode,
-                    model=source_model,
-                )
-                gemma_answer = ask_gemma_with_evidence(
-                    evidence_question,
-                    st.session_state.design_state,
-                    evidence_package,
-                    copilot_model if "copilot_model" in locals() else "gemma4:e4b",
-                )
-                st.session_state.evidence_recommendation = {
-                    "evidence_package": evidence_package,
-                    "gemma_answer": gemma_answer,
-                }
-        except Exception as e:
-            st.session_state.evidence_recommendation = {"error": str(e)}
-
-    evidence_result = st.session_state.get("evidence_recommendation")
-    if evidence_result:
-        st.markdown("#### Online Evidence Recommendation")
-        if evidence_result.get("error"):
-            st.error(evidence_result["error"])
-        else:
-            st.markdown(evidence_result["gemma_answer"])
-            package = evidence_result["evidence_package"]
-            if st.checkbox("Show structured Sonar evidence", value=False):
-                st.json(package.get("evidence", {}))
-            citations = package.get("citations", [])
-            if citations:
-                if st.checkbox("Show evidence citation URLs", value=False):
-                    for url in citations:
-                        st.markdown(f"- [{url}]({url})")
+        if st.session_state.online_citations:
+            with st.expander(f"Citations ({len(st.session_state.online_citations)})", expanded=False):
+                for _url in st.session_state.online_citations:
+                    st.markdown(f"- [{_url}]({_url})")
+    else:
+        st.markdown(
+            "<div class='chat-message' style='color:#94A3B8;'>Response appears here after you click **Ask + Evidence**.</div>",
+            unsafe_allow_html=True,
+        )
