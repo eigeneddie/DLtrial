@@ -224,6 +224,8 @@ if "sim_metrics" not in st.session_state:
     st.session_state.sim_metrics = {}
 if "sim_grids" not in st.session_state:
     st.session_state.sim_grids = {}
+if "validation" not in st.session_state:
+    st.session_state.validation = None
 if "last_blueprint_click" not in st.session_state:
     st.session_state.last_blueprint_click = None
 
@@ -306,6 +308,55 @@ def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_p
     draw.rectangle([0, 0, size_px - 1, size_px - 1], outline=(130, 145, 158, 255), width=2)
     return image
 
+
+def run_engine(engine_name, q_grid, k_grid, h_grid):
+    start_time = time.perf_counter()
+    if engine_name == "AI Surrogate":
+        temp_map = surrogate_steady_state(q_grid, k_grid, h_grid)
+    elif engine_name == "FDM Physics":
+        temp_map = fdm_steady_state(q_grid, k_grid, h_grid)
+    else:
+        raise ValueError(f"Unknown engine: {engine_name}")
+    elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+    return temp_map, elapsed_ms
+
+
+def build_validation_result(ai_map, fdm_map, ai_ms, fdm_ms):
+    err_map = np.abs(ai_map - fdm_map)
+    peak_ai = float(ai_map.max())
+    peak_fdm = float(fdm_map.max())
+    mae = float(err_map.mean())
+    rmse = float(np.sqrt(np.mean((ai_map - fdm_map) ** 2)))
+    max_error = float(err_map.max())
+    peak_error = abs(peak_ai - peak_fdm)
+    speedup = float(fdm_ms / ai_ms) if ai_ms > 0 else float("inf")
+    if peak_error <= 3.0 and mae <= 2.0:
+        verdict = "Validated for early design exploration"
+        verdict_detail = "The AI surrogate tracks the FDM reference closely enough for fast layout screening."
+    elif peak_error <= 7.0 and mae <= 4.0:
+        verdict = "Usable with engineering review"
+        verdict_detail = "The surrogate is directionally useful, but this layout should be checked with FDM before decisions."
+    else:
+        verdict = "Needs FDM confirmation"
+        verdict_detail = "The surrogate error is high for this layout; use the FDM map as the trusted reference."
+
+    return {
+        "ai_map": ai_map,
+        "fdm_map": fdm_map,
+        "err_map": err_map,
+        "ai_ms": float(ai_ms),
+        "fdm_ms": float(fdm_ms),
+        "speedup": speedup,
+        "mae": mae,
+        "rmse": rmse,
+        "max_error": max_error,
+        "peak_ai": peak_ai,
+        "peak_fdm": peak_fdm,
+        "peak_error": peak_error,
+        "verdict": verdict,
+        "verdict_detail": verdict_detail,
+    }
+
 # ═══════════════════════════════════════════════════════════════════════════
 # PART 1 — DESIGN ENVIRONMENT
 # ═══════════════════════════════════════════════════════════════════════════
@@ -340,9 +391,9 @@ with col_config:
     material_choice = st.selectbox("Substrate Material", list(MATERIALS.keys()), format_func=lambda x: x.upper())
     solver_mode = st.radio(
         "Thermal Engine",
-        ["AI Surrogate", "FDM Physics"],
-        horizontal=True,
-        help="AI Surrogate uses thermal_surrogate.pth. FDM Physics keeps the original numerical solver.",
+        ["AI Surrogate", "FDM Physics", "Compare AI + FDM"],
+        horizontal=False,
+        help="Compare AI + FDM runs both engines and produces validation metrics.",
     )
 
     c_tsv, c_ori = st.columns(2)
@@ -429,25 +480,35 @@ with col_canvas:
 # ═══════════════════════════════════════════════════════════════════════════
 
 if run_sim:
-    engine_label = "trained AI surrogate" if solver_mode == "AI Surrogate" else "finite difference solver"
+    engine_label = {
+        "AI Surrogate": "trained AI surrogate",
+        "FDM Physics": "finite difference solver",
+        "Compare AI + FDM": "AI surrogate and FDM validator",
+    }[solver_mode]
     with st.spinner(f"Executing {engine_label}..."):
-        start_time = time.perf_counter()
+        validation_result = None
         try:
-            if solver_mode == "AI Surrogate":
-                T_map = surrogate_steady_state(Q_grid, k_grid, h_grid)
+            if solver_mode == "Compare AI + FDM":
+                ai_map, ai_ms = run_engine("AI Surrogate", Q_grid, k_grid, h_grid)
+                fdm_map, fdm_ms = run_engine("FDM Physics", Q_grid, k_grid, h_grid)
+                validation_result = build_validation_result(ai_map, fdm_map, ai_ms, fdm_ms)
+                T_map = ai_map
+                elapsed_ms = ai_ms + fdm_ms
+            elif solver_mode == "AI Surrogate":
+                T_map, elapsed_ms = run_engine("AI Surrogate", Q_grid, k_grid, h_grid)
             else:
-                T_map = fdm_steady_state(Q_grid, k_grid, h_grid)
+                T_map, elapsed_ms = run_engine("FDM Physics", Q_grid, k_grid, h_grid)
         except Exception as e:
             st.error(f"AI surrogate unavailable: {e}")
             st.info("Falling back to FDM Physics for this run.")
             solver_mode = "FDM Physics"
-            T_map = fdm_steady_state(Q_grid, k_grid, h_grid)
-        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            T_map, elapsed_ms = run_engine("FDM Physics", Q_grid, k_grid, h_grid)
         stress_map, flag_map = compute_cte_stress(T_map, k_grid)
 
         # Save state
         st.session_state.T_map = T_map
         st.session_state.flag_map = flag_map
+        st.session_state.validation = validation_result
         st.session_state.sim_grids = {
             "Q": Q_grid.copy(),
             "k": k_grid.copy(),
@@ -464,6 +525,7 @@ if run_sim:
             "tsvs": num_tsvs,
             "engine": solver_mode,
             "runtime_ms": float(elapsed_ms),
+            "validation_verdict": validation_result["verdict"] if validation_result else "",
         }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -482,65 +544,126 @@ if st.session_state.simulation_run:
     m4.metric("Substrate k", f"{k_bulk:.0f} W/m·K", material_choice.upper())
     m5.metric("Engine", m_data.get("engine", "FDM Physics"), f"{m_data.get('runtime_ms', 0):.1f} ms")
 
-    st.markdown("### Thermal Distribution Map")
-    fig_res, axes = plt.subplots(1, 4, figsize=(22, 5), facecolor="#121212")
-    display_grids = st.session_state.sim_grids or {"Q": Q_grid, "k": k_grid, "h": h_grid}
+    map_tab, validation_tab = st.tabs(["Thermal Map", "Validation"])
 
-    panels = [
-        (axes[0], display_grids["Q"], "Blues",   "Power Q [W]",      "Power Layout"),
-        (axes[1], display_grids["k"], "Greens",  "k [W/(m·K)]",      f"Conductivity ({material_choice.upper()})"),
-        (axes[2], display_grids["h"], "Purples", "h [W/(m²·K)]",     "Cooling (TSVs)"),
-    ]
-    for ax, data, cmap, cbar_label, title in panels:
+    with map_tab:
+        st.markdown("### Thermal Distribution Map")
+        fig_res, axes = plt.subplots(1, 4, figsize=(22, 5), facecolor="#121212")
+        display_grids = st.session_state.sim_grids or {"Q": Q_grid, "k": k_grid, "h": h_grid}
+
+        panels = [
+            (axes[0], display_grids["Q"], "Blues",   "Power Q [W]",      "Power Layout"),
+            (axes[1], display_grids["k"], "Greens",  "k [W/(m·K)]",      f"Conductivity ({material_choice.upper()})"),
+            (axes[2], display_grids["h"], "Purples", "h [W/(m²·K)]",     "Cooling (TSVs)"),
+        ]
+        for ax, data, cmap, cbar_label, title in panels:
+            ax.set_facecolor("#121212")
+            im = ax.imshow(data, cmap=cmap, origin="upper", interpolation="nearest")
+            cb = fig_res.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            cb.set_label(cbar_label, fontsize=9, color="#E0E0E0")
+            cb.ax.yaxis.set_tick_params(color="#E0E0E0")
+            plt.setp(cb.ax.yaxis.get_ticklabels(), color="#E0E0E0")
+            ax.set_title(title, fontsize=11, color="#E0E0E0")
+            ax.tick_params(colors="#AAA")
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#333")
+
+        # Temp map
+        ax = axes[3]
         ax.set_facecolor("#121212")
-        im = ax.imshow(data, cmap=cmap, origin="upper", interpolation="nearest")
+        T_map = st.session_state.T_map
+        flag_map = st.session_state.flag_map
+
+        im = ax.imshow(T_map, cmap="inferno", origin="upper", interpolation="bilinear", vmin=T_AMBIENT)
         cb = fig_res.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cb.set_label(cbar_label, fontsize=9, color="#E0E0E0")
+        cb.set_label("Temperature [°C]", fontsize=9, color="#E0E0E0")
         cb.ax.yaxis.set_tick_params(color="#E0E0E0")
         plt.setp(cb.ax.yaxis.get_ticklabels(), color="#E0E0E0")
-        ax.set_title(title, fontsize=11, color="#E0E0E0")
+
+        levels = np.arange(np.ceil((T_AMBIENT + 5) / 10) * 10, T_map.max(), 10)
+        if len(levels):
+            cs = ax.contour(T_map, levels=levels, colors="white", linewidths=0.5, alpha=0.5)
+            ax.clabel(cs, fmt="%d°C", fontsize=7, inline=True)
+
+        rows, cols = np.where(flag_map)
+        if len(rows):
+            ax.scatter(cols, rows, c="#00FFFF", s=2, alpha=0.7, label="CTE fail")
+            ax.legend(fontsize=8, loc="upper right", facecolor="#1A1A1A", labelcolor="white")
+
+        ax.set_title("Temperature Output", fontsize=11, color="#E0E0E0")
         ax.tick_params(colors="#AAA")
         for spine in ax.spines.values():
             spine.set_edgecolor("#333")
 
-    # Temp map
-    ax = axes[3]
-    ax.set_facecolor("#121212")
-    T_map = st.session_state.T_map
-    flag_map = st.session_state.flag_map
+        plt.tight_layout()
 
-    im = ax.imshow(T_map, cmap="inferno", origin="upper", interpolation="bilinear", vmin=T_AMBIENT)
-    cb = fig_res.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cb.set_label("Temperature [°C]", fontsize=9, color="#E0E0E0")
-    cb.ax.yaxis.set_tick_params(color="#E0E0E0")
-    plt.setp(cb.ax.yaxis.get_ticklabels(), color="#E0E0E0")
+        # Base64 for Co-Pilot
+        buf = io.BytesIO()
+        fig_res.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor="#121212")
+        buf.seek(0)
+        heatmap_bytes  = buf.read()
+        st.session_state.heatmap_b64 = base64.b64encode(heatmap_bytes).decode("utf-8")
 
-    levels = np.arange(np.ceil((T_AMBIENT + 5) / 10) * 10, T_map.max(), 10)
-    if len(levels):
-        cs = ax.contour(T_map, levels=levels, colors="white", linewidths=0.5, alpha=0.5)
-        ax.clabel(cs, fmt="%d°C", fontsize=7, inline=True)
+        st.pyplot(fig_res)
+        plt.close(fig_res)
 
-    rows, cols = np.where(flag_map)
-    if len(rows):
-        ax.scatter(cols, rows, c="#00FFFF", s=2, alpha=0.7, label="CTE fail")
-        ax.legend(fontsize=8, loc="upper right", facecolor="#1A1A1A", labelcolor="white")
+    with validation_tab:
+        validation = st.session_state.validation
+        if not validation:
+            st.info("Select `Compare AI + FDM`, then run thermal analysis to collect validation data.")
+        else:
+            st.subheader(validation["verdict"])
+            st.caption(validation["verdict_detail"])
 
-    ax.set_title("Temperature Output", fontsize=11, color="#E0E0E0")
-    ax.tick_params(colors="#AAA")
-    for spine in ax.spines.values():
-        spine.set_edgecolor("#333")
+            v1, v2, v3, v4, v5 = st.columns(5)
+            v1.metric("Peak Error", f"{validation['peak_error']:.2f} °C")
+            v2.metric("MAE", f"{validation['mae']:.2f} °C")
+            v3.metric("RMSE", f"{validation['rmse']:.2f} °C")
+            v4.metric("Max Error", f"{validation['max_error']:.2f} °C")
+            v5.metric("Speedup", f"{validation['speedup']:.1f}x")
 
-    plt.tight_layout()
+            t1, t2, t3 = st.columns(3)
+            t1.metric("AI Runtime", f"{validation['ai_ms']:.1f} ms", f"Peak {validation['peak_ai']:.1f} °C")
+            t2.metric("FDM Runtime", f"{validation['fdm_ms']:.1f} ms", f"Peak {validation['peak_fdm']:.1f} °C")
+            t3.metric("Reference", "FDM", "ground truth")
 
-    # Base64 for Co-Pilot
-    buf = io.BytesIO()
-    fig_res.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor="#121212")
-    buf.seek(0)
-    heatmap_bytes  = buf.read()
-    st.session_state.heatmap_b64 = base64.b64encode(heatmap_bytes).decode("utf-8")
+            fig_val, axes_val = plt.subplots(1, 3, figsize=(18, 5), facecolor="#121212")
+            vmin = min(float(validation["ai_map"].min()), float(validation["fdm_map"].min()))
+            vmax = max(float(validation["ai_map"].max()), float(validation["fdm_map"].max()))
+            validation_panels = [
+                (axes_val[0], validation["ai_map"], "inferno", "AI Surrogate [°C]", vmin, vmax),
+                (axes_val[1], validation["fdm_map"], "inferno", "FDM Reference [°C]", vmin, vmax),
+                (axes_val[2], validation["err_map"], "magma", "|AI - FDM| [°C]", 0, None),
+            ]
+            for ax, data, cmap, title, panel_vmin, panel_vmax in validation_panels:
+                ax.set_facecolor("#121212")
+                im = ax.imshow(
+                    data,
+                    cmap=cmap,
+                    origin="upper",
+                    interpolation="bilinear",
+                    vmin=panel_vmin,
+                    vmax=panel_vmax,
+                )
+                cb = fig_val.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                cb.ax.yaxis.set_tick_params(color="#E0E0E0")
+                plt.setp(cb.ax.yaxis.get_ticklabels(), color="#E0E0E0")
+                ax.set_title(title, fontsize=11, color="#E0E0E0")
+                ax.tick_params(colors="#AAA")
+                for spine in ax.spines.values():
+                    spine.set_edgecolor("#333")
 
-    st.pyplot(fig_res)
-    plt.close(fig_res)
+            plt.tight_layout()
+            st.pyplot(fig_val)
+            plt.close(fig_val)
+
+            st.markdown(
+                f"Validated answer: AI predicts peak temperature "
+                f"**{validation['peak_ai']:.1f} °C** versus FDM "
+                f"**{validation['peak_fdm']:.1f} °C**, with "
+                f"**{validation['mae']:.2f} °C MAE** and "
+                f"**{validation['speedup']:.1f}x speedup**."
+            )
 
 # ═══════════════════════════════════════════════════════════════════════════
 # PART 3 — ENGINEERING CONSOLE (CO-PILOT)
