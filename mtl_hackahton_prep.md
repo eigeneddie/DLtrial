@@ -88,3 +88,127 @@ Hackathon Relevance: It validates exactly why your team must include a Latency S
 The Core Idea: A comprehensive, up-to-date overview summarizing current methodologies and future directions for chiplet architectures strictly from an Electronic Design Automation (EDA) standpoint.
 
 Hackathon Relevance: This is the perfect backgrounder for the entire team to skim. It connects the front-end architectural choices to back-end physical design and packaging, providing the overarching context of why "Shift-Left" thermal and latency surrogates like yours are currently in such high demand by major foundries.
+
+
+## 11. Post-mortem — Act 2: Inverse-Design Optimizer (Personal Learning Notes)
+
+This section captures the engineering attempt to extend the diagnostic surrogate
+(Act 1) into a generative layout co-pilot (Act 2). It did **not** make it into
+the hackathon submission. Lives on the `act2-optimizer` git branch.
+
+### 11.1 Goal
+Take the user's starting layout and use gradient descent through the *frozen*
+trained CNN to nudge chiplet (x, y) positions toward a layout with lower peak
+temperature and shorter inter-die wirelength. Mental model: heat is a repulsive
+spring (push hot dies apart), wires are an attractive spring (pull connected
+dies together), and α is the priority knob between them.
+
+### 11.2 What was built (`inverse_design.py`, `test_case_study_1.py`)
+- **Soft-box chiplet rendering** — erf-blurred rectangles so chiplet (x, y)
+  becomes a differentiable function of position (DiffChip §III-B).
+- **LSE-HPWL** — Half-Perimeter Wire Length smoothed with Log-Sum-Exp so the
+  max/min in the bounding-box formula has gradients flowing to all endpoints.
+- **p-norm peak temperature** — `T_max ≈ (Σ T_i^p)^(1/p)` so gradient flows
+  through more than just the single hottest cell.
+- **Combined cost** — TAP-2.5D Eq. 12: `α·T_norm + (1−α)·W_norm`, both terms
+  min-max normalized to [0, 1] so α is a meaningful blend, not unit-mismatched.
+- **Auto-α policy** — TAP-2.5D Eq. 13: above 85 °C, α ramps with temperature;
+  below, pure wirelength minimization.
+- **Non-overlap penalty** — integral of excess occupancy above tolerance,
+  prevents chiplets from piling onto each other.
+- **Adam optimizer loop** — 50–100 steps, ~5 sec total per layout.
+- **TAP-2.5D Case 1 validation script** — runs the published Multi-GPU System
+  through our pipeline to compare against the paper's published numbers.
+
+### 11.3 Why it didn't quite work — four root causes
+
+**(a) Power semantics mismatch in the data factory.**
+Original `data_generator.py` stamped *total chiplet power* into every cell of
+the chiplet (e.g., a 26×26 GPU at 295 W stored "295" in each of its 676 cells).
+This produced wildly unphysical Q grids (~200 kW total per layout) and led to
+peak temperatures of 158 °C on Case 1 vs. the paper's 95 °C. The fix is per-cell
+*power density* (W per cell = total / area), matching how HotSpot works.
+
+**(b) Calibration was tuned for the wrong semantics.**
+Once semantics was corrected, the original `POWER_SCALE = 0.05` produced
+temperatures of 25 °C (basically ambient — too cold). A retune to
+`POWER_SCALE = 16` brought Case 1 down to 88.8 °C — within 7 °C of the paper.
+**This part actually worked.** The calibration is now physically meaningful.
+
+**(c) CNN gradient sensitivity is weak.**
+After regenerating data with the corrected calibration and retraining, the CNN
+learned the right *global* physics but was only weakly sensitive to *small*
+chiplet displacements. The optimizer's `∂T/∂coords` was near-zero, so even
+with α=0.9 the thermal gradient barely contributed to the cost. The optimizer
+ended up dominated by wirelength.
+
+**(d) CNN under-predicts T relative to FDM ground truth.**
+On the Case 1 layout, FDM gives 88.8 °C but the CNN predicts ~57 °C. The
+auto-α policy reads the CNN value, sees `57 < 85` (the threshold), and sets
+α = 0 → "thermally safe → pure wirelength minimization." The optimizer then
+*compresses* chiplets, which is the wrong direction.
+
+### 11.4 What we observed vs. the paper
+
+| Metric           | TAP-2.5D paper | Our optimizer       |
+|------------------|---------------:|--------------------:|
+| Initial peak T   | 95.31 °C       | 88.76 °C (FDM)      |
+| Final peak T     | 91.25 °C       | ~89 °C (~flat)      |
+| ΔT               | −4.06 °C       | ~0 °C               |
+| Initial HPWL     | 88,059 mm      | 244 cells           |
+| ΔHPWL            | +10%           | +2% (with α=0.9)    |
+
+The **direction is correct** with α=0.9 (HPWL goes up, matching the paper's
+"sacrifice wirelength to gain thermal" trade-off). The **magnitude is small**
+because the CNN gradient is too weak to drive aggressive chiplet movement.
+
+### 11.5 What would actually fix it (in order of effort vs payoff)
+
+1. **Replace the CNN with a differentiable FDM in JAX or PyTorch** (DiffChip's
+   actual approach). Exact gradients, no surrogate sensitivity gap. Slower
+   per step (~0.5 sec instead of 0.01 sec), but still ~25 sec per layout vs
+   TAP-2.5D's 25 hours of Simulated Annealing. **Highest payoff.**
+
+2. **Train a more sensitive surrogate.** Wider input distribution, denser
+   sampling at boundary regimes, different loss (e.g., L1 with edge-aware
+   weighting), or output the full T field as auxiliary loss to force spatial
+   sensitivity. Medium effort, medium payoff.
+
+3. **Use bandwidth-weighted HPWL** like TAP-2.5D's MILP routing — multiply
+   each net's bounding-box length by its bit width (128 or 1024). Penalizes
+   long high-bandwidth nets more aggressively. Easy fix.
+
+4. **Multi-layer 3D FDM** with proper heat spreader, TIM, microbump layers —
+   would close the remaining 7 °C gap to HotSpot. Big effort.
+
+5. **Pin clumps for HPWL** (TAP-2.5D §III-A) — measure wirelength edge-to-edge
+   instead of center-to-center. Marginal but more physically accurate.
+
+### 11.6 Lessons for the next attempt
+
+- **Surrogate-assisted optimization inherits the surrogate's weaknesses.**
+  A CNN that looks fine in isolation (low MAE on test set) can still be useless
+  for inverse design if its spatial gradients are too smooth.
+
+- **Calibration and sensitivity are different problems.** Fixing one doesn't
+  fix the other. A calibrated CNN can still have weak gradients.
+
+- **Power semantics matter enormously.** Per-chiplet vs per-cell density is
+  the difference between unphysical and physical. Always cross-check against
+  a known reference case (TAP-2.5D Case 1 was a great anchor).
+
+- **The right direction can be visible even when magnitude is small.** Don't
+  conflate "didn't reproduce the paper's numbers" with "didn't validate the
+  approach." +2% HPWL in the same direction as the paper's +10% is a real
+  signal, just attenuated.
+
+- **Hackathon scope discipline pays off.** Act 1 alone (diagnostic surrogate
+  + CTE flagging + LLM copilot + Streamlit UI) was a defensible submission.
+  Trying to bolt on Act 2 in parallel would have risked tanking Act 1's
+  polish. The branching strategy (`act2-optimizer` lives separately) preserved
+  optionality without adding deadline risk.
+
+- **DiffChip's framing > our framing.** They differentiate through the
+  physics solver itself (JAX autodiff over an FDM linear solve). We tried to
+  borrow their math while keeping a learned CNN as the physics oracle —
+  conceptually elegant but practically limited by the surrogate.
