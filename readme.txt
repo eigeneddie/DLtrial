@@ -20,16 +20,16 @@ CHANNEL MAPPINGS  (X_data axis=1)
 
 NORMALIZATION CONSTANTS
 -----------------------
-  Channel 0  Q      min =     0.0000 W          max =   299.9977 W
+  Channel 0  Q      min =     0.0000 W          max =     2.3999 W
   Channel 1  k      min =   149.0000 W/(m·K)   max =   260.0000 W/(m·K)
   Channel 2  h      min =    50.0000 W/(m²·K)  max =   400.0000 W/(m²·K)
-  Label      T      min =    25.0000 °C         max =   268.1102 °C
+  Label      T      min =    25.0000 °C         max =   350.0977 °C
 
 UN-SCALING PREDICTIONS (Python)
 --------------------------------
   import numpy as np
   T_norm  = model(X_norm)           # CNN output, shape (N, 64, 64), range [0,1]
-  T_deg_C = T_norm * (268.1102 - 25.0000) + 25.0000
+  T_deg_C = T_norm * (350.0977 - 25.0000) + 25.0000
 
 CTE STRESS OVERLAY (post-processing, not saved in .npy)
 ---------------------------------------------------------

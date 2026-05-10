@@ -103,11 +103,11 @@ EVIDENCE_SCHEMA = {
 }
 
 X_SCALES = {
-    "Q": (0.0, 299.9977),
+    "Q": (0.0, 2.3999),
     "k": (149.0, 260.0),
     "h": (50.0, 400.0),
 }
-Y_SCALE = (25.0, 268.1102)
+Y_SCALE = (25.0, 350.0977)
 
 
 class ThermalSurrogate(nn.Module):
@@ -338,10 +338,10 @@ TSV_DENSITY_LABELS = {
 }
 
 
-def add_component_from_click(component_type, row, col):
+def add_component_from_click(component_type, row, col, rotate=False):
     preset = COMPONENT_PRESETS[component_type]
-    height = int(preset["Height"])
-    width = int(preset["Width"])
+    height = int(preset["Width"] if rotate else preset["Height"])
+    width  = int(preset["Height"] if rotate else preset["Width"])
     y_row = int(np.clip(row - height // 2, 1, GRID_SIZE - height - 1))
     x_col = int(np.clip(col - width // 2, 1, GRID_SIZE - width - 1))
     new_component = {
@@ -841,11 +841,14 @@ with st.sidebar:
 
     if place_type is None:
         place_type = list(COMPONENT_PRESETS.keys())[0]
+    rotate_chip = st.toggle("Rotate 90°", key="rotate_chip")
     preset = COMPONENT_PRESETS[place_type]
+    disp_w = preset['Height'] if rotate_chip else preset['Width']
+    disp_h = preset['Width']  if rotate_chip else preset['Height']
     c_size, c_power = st.columns(2)
     c_size.markdown(
         f"<div style='font-size:11px;color:#6B7280'><b>Footprint</b><br/>"
-        f"{preset['Width']*CELL_MM:.1f} × {preset['Height']*CELL_MM:.1f} mm</div>",
+        f"{disp_w*CELL_MM:.1f} × {disp_h*CELL_MM:.1f} mm</div>",
         unsafe_allow_html=True,
     )
     c_power.markdown(
@@ -886,7 +889,7 @@ for idx, row in edited_df.iterrows():
         r1 = min(r0 + int(row["Height"]), GRID_SIZE)
         c1 = min(c0 + int(row["Width"]),  GRID_SIZE)
         if r0 >= 0 and c0 >= 0 and r1 > r0 and c1 > c0:
-            Q_grid[r0:r1, c0:c1] = float(row["Power_W"])
+            Q_grid[r0:r1, c0:c1] = float(row["Power_W"]) / ((r1 - r0) * (c1 - c0))
     except Exception:
         pass
 
@@ -921,7 +924,7 @@ with col_blueprint:
         if not _sidebar_changed:
             grid_col = int(np.clip(click["x"] / 576 * GRID_SIZE, 0, GRID_SIZE - 1))
             grid_row = int(np.clip(click["y"] / 576 * GRID_SIZE, 0, GRID_SIZE - 1))
-            add_component_from_click(place_type, grid_row, grid_col)
+            add_component_from_click(place_type, grid_row, grid_col, rotate=rotate_chip)
             st.rerun()
 
     st.caption(

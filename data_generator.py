@@ -62,7 +62,7 @@ H_REF = 50.0    # [W/(m²·K)]  baseline ambient convection coefficient
 #   T_peak  ≈  T_AMBIENT + Q_cell  [°C]   (at base cooling on Si substrate)
 # Increase COOL_RATE to lower peak temperatures; decrease to raise them.
 COOL_RATE   = 0.05   # dimensionless convective cooling fraction
-POWER_SCALE = 0.05   # [°C/W] power-to-temperature gain (keep equal to COOL_RATE)
+POWER_SCALE = 16.0   # [°C / (W/cell)] recalibrated for per-cell power density
 
 # FDM solver settings
 MAX_ITERATIONS  = 5_000
@@ -130,7 +130,7 @@ def hub_and_spoke_layout(rng):
     hub_r = GRID_SIZE // 2 - hub_h // 2
     hub_c = GRID_SIZE // 2 - hub_w // 2
     if _place_rect(Q, occupied, hub_r, hub_c, hub_h, hub_w,
-                   float(rng.uniform(*LOGIC_POWER_RANGE))):
+                   float(rng.uniform(*LOGIC_POWER_RANGE)) / (hub_h * hub_w)):
         chiplets.append({"label": "Logic", "r0": hub_r, "c0": hub_c, "h": hub_h, "w": hub_w})
 
     # Peripheral Memory dies (the spokes) — one at each cardinal direction
@@ -145,7 +145,7 @@ def hub_and_spoke_layout(rng):
         (hub_r + hub_h // 2 - mem_h // 2, hub_c + hub_w + gap),               # East
     ]:
         if _place_rect(Q, occupied, r0, c0, mem_h, mem_w,
-                       float(rng.uniform(*MEMORY_POWER_RANGE))):
+                       float(rng.uniform(*MEMORY_POWER_RANGE)) / (mem_h * mem_w)):
             chiplets.append({"label": "Memory", "r0": r0, "c0": c0, "h": mem_h, "w": mem_w})
 
     return Q, chiplets
@@ -175,7 +175,7 @@ def disaggregated_layout(rng):
             r = int(rng.integers(1, GRID_SIZE - h - 1))
             c = int(rng.integers(1, GRID_SIZE - w - 1))
             if _place_rect(Q, occupied, r, c, h, w,
-                           float(rng.uniform(*TILE_POWER_RANGE))):
+                           float(rng.uniform(*TILE_POWER_RANGE)) / (h * w)):
                 chiplets.append({"label": f"Tile {tile_idx + 1}",
                                   "r0": r, "c0": c, "h": h, "w": w})
                 break
@@ -206,7 +206,7 @@ def packed_gpu_layout(rng):
     c0 = GRID_SIZE // 2 - total_w // 2
 
     for idx, col in enumerate([c0, c0 + die_w + gap]):
-        power = float(rng.uniform(200.0, 300.0))
+        power = float(rng.uniform(200.0, 300.0)) / (die_h * die_w)
         if _place_rect(Q, occupied, r0, col, die_h, die_w, power):
             chiplets.append({"label": f"GPU{idx}", "r0": r0, "c0": col,
                               "h": die_h, "w": die_w})
@@ -217,7 +217,7 @@ def packed_gpu_layout(rng):
         r1 = r0 + offset[0]
         c1 = c0 + offset[1]
         if _place_rect(Q, occupied, r1, c1, mem_h, mem_w,
-                       float(rng.uniform(*MEMORY_POWER_RANGE))):
+                       float(rng.uniform(*MEMORY_POWER_RANGE)) / (mem_h * mem_w)):
             chiplets.append({"label": "HBM", "r0": r1, "c0": c1,
                               "h": mem_h, "w": mem_w})
 
