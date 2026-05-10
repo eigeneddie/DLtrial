@@ -805,16 +805,12 @@ def ask_gemma_with_evidence(question, design_state, evidence_package, model_name
 # PART 1 — DESIGN ENVIRONMENT
 # ═══════════════════════════════════════════════════════════════════════════
 
-st.title("Chilli Chiplets")
-st.divider()
-
 col_blueprint, col_results = st.columns([1, 1])
 
-# Consumed once per rerun — set by the button inside the Validation tab
-run_validation = st.session_state.pop("_validate_requested", False)
-
 with st.sidebar:
-    st.header("Controls")
+    st.markdown("## 🌶 Chilli Chiplets")
+    st.caption("2.5D thermal co-design surrogate")
+    st.divider()
 
     place_type = st.segmented_control(
         "Place component",
@@ -843,6 +839,8 @@ with st.sidebar:
     </script>
     """, unsafe_allow_html=True)
 
+    if place_type is None:
+        place_type = list(COMPONENT_PRESETS.keys())[0]
     preset = COMPONENT_PRESETS[place_type]
     c_size, c_power = st.columns(2)
     c_size.markdown(
@@ -871,50 +869,24 @@ with st.sidebar:
         value="Low",
     )
     st.caption(TSV_DENSITY_LABELS[tsv_density])
-    solver_mode = "AI Surrogate"
-
+    st.divider()
     run_sim = st.button("Run Analysis", use_container_width=True)
-
-    with st.expander("Advanced", expanded=False):
-        solver_mode = st.radio(
-            "Thermal engine",
-            ["AI Surrogate", "FDM Physics"],
-            horizontal=True,
-            help="AI Surrogate uses thermal_surrogate.pth. FDM Physics keeps the numerical solver.",
-        )
-        edited_df = st.data_editor(
-            st.session_state.components_df,
-            key=f"data_editor_{st.session_state.get('_editor_key', 0)}",
-            num_rows="dynamic",
-            column_config={
-                "Type": st.column_config.SelectboxColumn(
-                    "Type", help="Component Type", options=["CPU", "GPU", "HBM"], required=True
-                ),
-                "Power_W": st.column_config.NumberColumn("Power (W)", min_value=1.0, max_value=200.0, format="%.1f"),
-                "Width": st.column_config.NumberColumn("Width", min_value=1, max_value=64),
-                "Height": st.column_config.NumberColumn("Height", min_value=1, max_value=64),
-                "X_Col": st.column_config.NumberColumn("X_Col", min_value=0, max_value=64),
-                "Y_Row": st.column_config.NumberColumn("Y_Row", min_value=0, max_value=64),
-            },
-            width="stretch",
-        )
-        st.session_state.components_df = edited_df
+    st.divider()
+    use_physics = st.toggle("Switch to physics engine mode")
+    solver_mode = "High-Fidelity Physics" if use_physics else "AI Surrogate"
 
 edited_df = st.session_state.components_df
 
 # ── Build LIVE blueprint grids ──────────────────────────────────────────────
-Q_grid   = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32)
-occupied = np.zeros((GRID_SIZE, GRID_SIZE), dtype=bool)
+Q_grid = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32)
 
-# Place components from dataframe
 for idx, row in edited_df.iterrows():
     try:
-        _place_rect(
-            Q_grid, occupied,
-            int(row["Y_Row"]), int(row["X_Col"]),
-            int(row["Height"]), int(row["Width"]),
-            float(row["Power_W"])
-        )
+        r0, c0 = int(row["Y_Row"]), int(row["X_Col"])
+        r1 = min(r0 + int(row["Height"]), GRID_SIZE)
+        c1 = min(c0 + int(row["Width"]),  GRID_SIZE)
+        if r0 >= 0 and c0 >= 0 and r1 > r0 and c1 > c0:
+            Q_grid[r0:r1, c0:c1] = float(row["Power_W"])
     except Exception:
         pass
 
@@ -931,11 +903,9 @@ if st.session_state.get("_blueprint_hash") != _layout_hash:
 
 if not st.session_state.simulation_run:
     with col_results:
-        st.subheader("Thermal Analysis")
         st.info("Place chiplets on the canvas, then click **Run Analysis**.")
 
 with col_blueprint:
-    st.subheader("Package Blueprint")
     blueprint_image = st.session_state["_blueprint_image"]
     click = streamlit_image_coordinates(
         blueprint_image,
@@ -943,12 +913,16 @@ with col_blueprint:
         key="blueprint_click",
         cursor="crosshair",
     )
+    _sidebar_sig = (place_type, material_choice, tsv_density, use_physics)
+    _sidebar_changed = st.session_state.get("_prev_sidebar_sig") != _sidebar_sig
+    st.session_state["_prev_sidebar_sig"] = _sidebar_sig
     if click and click != st.session_state.get("_last_click"):
         st.session_state["_last_click"] = click
-        grid_col = int(np.clip(click["x"] / 576 * GRID_SIZE, 0, GRID_SIZE - 1))
-        grid_row = int(np.clip(click["y"] / 576 * GRID_SIZE, 0, GRID_SIZE - 1))
-        add_component_from_click(place_type, grid_row, grid_col)
-        st.rerun()
+        if not _sidebar_changed:
+            grid_col = int(np.clip(click["x"] / 576 * GRID_SIZE, 0, GRID_SIZE - 1))
+            grid_row = int(np.clip(click["y"] / 576 * GRID_SIZE, 0, GRID_SIZE - 1))
+            add_component_from_click(place_type, grid_row, grid_col)
+            st.rerun()
 
     st.caption(
         f"Selected: **{place_type}** ({COMPONENT_PRESETS[place_type]['Width']*CELL_MM:.1f}×"
@@ -963,26 +937,17 @@ with col_blueprint:
 # EXECUTION LOGIC
 # ═══════════════════════════════════════════════════════════════════════════
 
-if run_validation:
-    # Validation only — runs both engines and saves comparison; heatmap unchanged
-    with st.spinner("Running AI + physics comparison..."):
-        try:
-            ai_map, ai_ms   = run_engine("AI Surrogate", Q_grid, k_grid, h_grid)
-            fdm_map, fdm_ms = run_engine("FDM Physics",  Q_grid, k_grid, h_grid)
-            st.session_state.validation = build_validation_result(ai_map, fdm_map, ai_ms, fdm_ms)
-        except Exception as e:
-            st.error(f"Comparison failed: {e}")
-
 if run_sim:
-    engine_label = {"AI Surrogate": "trained AI surrogate", "FDM Physics": "finite difference solver"}[solver_mode]
+    engine_label = "trained AI surrogate" if solver_mode == "AI Surrogate" else "high-fidelity physics solver"
+    engine_key   = "AI Surrogate" if solver_mode == "AI Surrogate" else "FDM Physics"
     with st.spinner(f"Executing {engine_label}..."):
         try:
-            T_map, elapsed_ms = run_engine(solver_mode, Q_grid, k_grid, h_grid)
+            T_map, elapsed_ms = run_engine(engine_key, Q_grid, k_grid, h_grid)
         except Exception as e:
             st.error(f"AI surrogate unavailable: {e}")
-            st.info("Falling back to FDM Physics for this run.")
-            solver_mode = "FDM Physics"
-            T_map, elapsed_ms = run_engine("FDM Physics", Q_grid, k_grid, h_grid)
+            st.info("Falling back to high-fidelity physics solver.")
+            engine_key = "FDM Physics"
+            T_map, elapsed_ms = run_engine(engine_key, Q_grid, k_grid, h_grid)
         stress_map, flag_map = compute_cte_stress(T_map, k_grid)
         design_state = build_structured_design_state(
             components_df=edited_df,
@@ -1009,7 +974,7 @@ if run_sim:
             "stress_max": float(stress_map.max()),
             "delta_T": float(T_map.max() - T_AMBIENT),
             "material": material_choice,
-            "engine": solver_mode,
+            "engine": solver_mode,  # display name (AI Surrogate / High-Fidelity Physics)
             "runtime_ms": float(elapsed_ms),
         }
 
@@ -1024,7 +989,6 @@ if st.session_state.simulation_run:
 
     # ── Results in right column, next to blueprint ─────────────────────────
     with col_results:
-        st.subheader("Thermal Analysis")
         ra, rb = st.columns(2)
         ra.metric("Peak T", f"{m_data['peak_T']:.1f} °C", f"+{m_data['delta_T']:.1f} °C")
         rb.metric("CTE Failures", f"{m_data['cte_fails']} cells")
@@ -1068,54 +1032,37 @@ if st.session_state.simulation_run:
         plt.close(fig_inline)
 
     # ── Full detail below (full-width) ────────────────────────────────────
-    map_tab, validation_tab = st.tabs(["Thermal Map", "Validation"])
-
-    with map_tab:
-        fig_res, axes = plt.subplots(1, 4, figsize=(22, 5), facecolor="#FFFFFF")
-        display_grids = st.session_state.sim_grids or {"Q": Q_grid, "k": k_grid, "h": h_grid}
-
-        panels = [
-            (axes[0], display_grids["Q"], "Blues",   "Power Q [W]",      "Power Layout"),
-            (axes[1], display_grids["k"], "Greens",  "k [W/(m·K)]",      f"Conductivity ({material_choice.upper()})"),
-            (axes[2], display_grids["h"], "Purples", "h [W/(m²·K)]",     "Cooling (TSVs)"),
-        ]
-        for ax, data, cmap, cbar_label, title in panels:
-            ax.set_facecolor("#FFFFFF")
-            im = ax.imshow(data, cmap=cmap, origin="upper", interpolation="nearest")
-            cb = fig_res.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            cb.set_label(cbar_label, fontsize=9, color="#334155")
-            cb.ax.yaxis.set_tick_params(color="#475569")
-            plt.setp(cb.ax.yaxis.get_ticklabels(), color="#475569")
-            ax.set_title(title, fontsize=11, color="#111827")
-            ax.tick_params(colors="#64748B")
-            for spine in ax.spines.values():
-                spine.set_edgecolor("#CBD5E1")
-
-        ax = axes[3]
+    # Pre-render input grids to bytes so st.image (not st.pyplot) is used
+    # inside the tab — avoids Streamlit rendering the figure outside the tab
+    # container during reruns, which caused a duplicate heatmap flash.
+    display_grids = st.session_state.sim_grids or {"Q": Q_grid, "k": k_grid, "h": h_grid}
+    fig_res, axes = plt.subplots(1, 3, figsize=(17, 5), facecolor="#FFFFFF")
+    for ax, (data, cmap, cbar_label, title) in zip(axes, [
+        (display_grids["Q"], "Blues",   "Power Q [W]",  "Power Layout"),
+        (display_grids["k"], "Greens",  "k [W/(m·K)]",  f"Conductivity ({material_choice.upper()})"),
+        (display_grids["h"], "Purples", "h [W/(m²·K)]", "Cooling (TSVs)"),
+    ]):
         ax.set_facecolor("#FFFFFF")
-        im = ax.imshow(T_map, cmap="inferno", origin="upper", interpolation="bilinear", vmin=T_AMBIENT)
+        im = ax.imshow(data, cmap=cmap, origin="upper", interpolation="nearest")
         cb = fig_res.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cb.set_label("Temperature [°C]", fontsize=9, color="#334155")
+        cb.set_label(cbar_label, fontsize=9, color="#334155")
         cb.ax.yaxis.set_tick_params(color="#475569")
         plt.setp(cb.ax.yaxis.get_ticklabels(), color="#475569")
-
-        levels = np.arange(np.ceil((T_AMBIENT + 5) / 10) * 10, T_map.max(), 10)
-        if len(levels):
-            cs = ax.contour(T_map, levels=levels, colors="white", linewidths=0.5, alpha=0.5)
-            ax.clabel(cs, fmt="%d°C", fontsize=7, inline=True)
-
-        rows, cols = np.where(flag_map)
-        if len(rows):
-            ax.scatter(cols, rows, c="#00FFFF", s=2, alpha=0.7, label="CTE fail")
-            ax.legend(fontsize=8, loc="upper right", facecolor="#FFFFFF", edgecolor="#CBD5E1", labelcolor="#111827")
-
-        ax.set_title("Temperature Output", fontsize=11, color="#111827")
+        ax.set_title(title, fontsize=11, color="#111827")
         ax.tick_params(colors="#64748B")
         for spine in ax.spines.values():
             spine.set_edgecolor("#CBD5E1")
-        plt.tight_layout()
-        st.pyplot(fig_res)
-        plt.close(fig_res)
+    fig_res.tight_layout()
+    _buf_res = io.BytesIO()
+    fig_res.savefig(_buf_res, format="png", dpi=100, bbox_inches="tight", facecolor="#FFFFFF")
+    plt.close(fig_res)
+    _buf_res.seek(0)
+    _map_tab_img = _buf_res.read()
+
+    map_tab, validation_tab = st.tabs(["Input Grids", "Validation"])
+
+    with map_tab:
+        st.image(_map_tab_img, use_container_width=True)
 
     with validation_tab:
         st.button(
@@ -1123,6 +1070,14 @@ if st.session_state.simulation_run:
             use_container_width=True,
             on_click=lambda: st.session_state.update({"_validate_requested": True}),
         )
+        if st.session_state.pop("_validate_requested", False):
+            with st.spinner("Running AI + physics comparison..."):
+                try:
+                    ai_map, ai_ms   = run_engine("AI Surrogate", Q_grid, k_grid, h_grid)
+                    fdm_map, fdm_ms = run_engine("FDM Physics",  Q_grid, k_grid, h_grid)
+                    st.session_state.validation = build_validation_result(ai_map, fdm_map, ai_ms, fdm_ms)
+                except Exception as e:
+                    st.error(f"Comparison failed: {e}")
         validation = st.session_state.validation
         if not validation:
             st.caption("Run a comparison to see how closely the AI surrogate matches the physics solver for this layout.")

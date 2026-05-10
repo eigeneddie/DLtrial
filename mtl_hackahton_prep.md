@@ -212,3 +212,44 @@ because the CNN gradient is too weak to drive aggressive chiplet movement.
   physics solver itself (JAX autodiff over an FDM linear solve). We tried to
   borrow their math while keeping a learned CNN as the physics oracle —
   conceptually elegant but practically limited by the surrogate.
+
+---
+
+## 12. Surrogate Model — State as of 2026-05-10 (pre-presentation checkpoint)
+
+### 12.1 What was retrained today
+
+The model in `thermal_surrogate.pth` is a fresh train with these changes vs. the original:
+
+| Change | Before | After |
+|--------|--------|-------|
+| Q range in training data | 80–150 W/cell | 80–300 W/cell |
+| Layout types | hub-and-spoke, disaggregated | + packed GPU (two adjacent 200–300 W dies) |
+| N samples | 1000 | 2000 |
+| Output activation | `nn.Sigmoid()` | removed → `.clamp(0, 1)` |
+| Loss function | `nn.MSELoss()` | `nn.L1Loss()` |
+| Final val MAE | — | ~0.0057 normalized ≈ **1.4 °C** |
+
+Motivation: original model was severely under-predicting GPU layouts (295 W normalized to ~1.97 with old max of 149.97 W → OOD, Sigmoid saturated near 0.5).
+
+### 12.2 Known remaining issue — power semantics
+
+The model (and FDM) uses **per-cell power** convention: `Q_grid[r0:r1, c0:c1] = total_chip_power_W`.
+This means a 23×23 GPU at 295 W stamps 295 W into each of 529 cells → ~156 kW of simulated total heat. Result: peak temperatures of 250–275 °C for Si/no-TSV/center placement — physically unrealistic (real GPU junction limit ~125 °C).
+
+The **right fix** (documented in §11.3a and §11.3b):
+```python
+# Per-cell power density instead of total power
+Q_grid[r0:r1, c0:c1] = total_W / (height * width)
+```
+And recalibrate `POWER_SCALE` from `0.05` → `~16` to recover physically meaningful temperatures (~88 °C for TAP-2.5D Case 1, matching the paper).
+
+**Why not done today:** requires full data regen + retrain. The relative comparisons (AlN vs Si, TSV vs no-TSV, corner vs center placement) are still directionally correct and sufficient for the demo.
+
+### 12.3 If retraining for fun after the presentation
+
+1. In `data_generator.py`: change `_place_rect` calls in layout functions to use `power / (h * w)` instead of `power`
+2. Change `POWER_SCALE = 0.05` → `POWER_SCALE = 16` (from Act 2 calibration work)
+3. In `app.py`: same fix when building `Q_grid` from `components_df`
+4. Rerun `data_generator.py` (N=2000), then `model_trainer.py`
+5. Cross-check: 2× CPU on Si, no TSV, corner placement → expect peak ~60–80 °C
