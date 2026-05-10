@@ -806,13 +806,15 @@ def ask_gemma_with_evidence(question, design_state, evidence_package, model_name
 # ═══════════════════════════════════════════════════════════════════════════
 
 st.title("Chilli Chiplets")
-st.markdown("Place chiplets, run the trained thermal surrogate, and validate against the physics solver when needed.")
 st.divider()
 
-col_canvas, col_config = st.columns([1.5, 1])
+col_blueprint, col_results = st.columns([1, 1])
 
-with col_config:
-    st.subheader("Design Controls")
+# Consumed once per rerun — set by the button inside the Validation tab
+run_validation = st.session_state.pop("_validate_requested", False)
+
+with st.sidebar:
+    st.header("Controls")
 
     place_type = st.segmented_control(
         "Place component",
@@ -843,12 +845,22 @@ with col_config:
 
     preset = COMPONENT_PRESETS[place_type]
     c_size, c_power = st.columns(2)
-    c_size.metric("Footprint", f"{preset['Width']*CELL_MM:.1f} × {preset['Height']*CELL_MM:.1f} mm")
-    c_power.metric("Power", f"{preset['Power_W']:.0f} W" if preset['Power_W'] > 0 else "Cooling")
+    c_size.markdown(
+        f"<div style='font-size:11px;color:#6B7280'><b>Footprint</b><br/>"
+        f"{preset['Width']*CELL_MM:.1f} × {preset['Height']*CELL_MM:.1f} mm</div>",
+        unsafe_allow_html=True,
+    )
+    c_power.markdown(
+        f"<div style='font-size:11px;color:#6B7280'><b>Power</b><br/>"
+        f"{'%g W' % preset['Power_W'] if preset['Power_W'] > 0 else 'Cooling'}</div>",
+        unsafe_allow_html=True,
+    )
 
     if st.button("Clear layout"):
         st.session_state.components_df = st.session_state.components_df.iloc[0:0].copy()
         st.session_state.simulation_run = False
+        st.session_state.pop("_last_click", None)
+        st.session_state["_editor_key"] = st.session_state.get("_editor_key", 0) + 1
         st.rerun()
 
     st.markdown("#### Package")
@@ -861,8 +873,7 @@ with col_config:
     st.caption(TSV_DENSITY_LABELS[tsv_density])
     solver_mode = "AI Surrogate"
 
-    run_sim = st.button("Run thermal analysis")
-    run_validation = st.button("Validate AI vs FDM")
+    run_sim = st.button("Run Analysis", use_container_width=True)
 
     with st.expander("Advanced", expanded=False):
         solver_mode = st.radio(
@@ -873,6 +884,7 @@ with col_config:
         )
         edited_df = st.data_editor(
             st.session_state.components_df,
+            key=f"data_editor_{st.session_state.get('_editor_key', 0)}",
             num_rows="dynamic",
             column_config={
                 "Type": st.column_config.SelectboxColumn(
@@ -887,9 +899,6 @@ with col_config:
             width="stretch",
         )
         st.session_state.components_df = edited_df
-
-    # Results appear here (inside right column) after a simulation run
-    result_container = st.container()
 
 edited_df = st.session_state.components_df
 
@@ -920,7 +929,12 @@ if st.session_state.get("_blueprint_hash") != _layout_hash:
     st.session_state["_blueprint_image"] = render_placement_blueprint(edited_df)
     st.session_state["_blueprint_hash"] = _layout_hash
 
-with col_canvas:
+if not st.session_state.simulation_run:
+    with col_results:
+        st.subheader("Thermal Analysis")
+        st.info("Place chiplets on the canvas, then click **Run Analysis**.")
+
+with col_blueprint:
     st.subheader("Package Blueprint")
     blueprint_image = st.session_state["_blueprint_image"]
     click = streamlit_image_coordinates(
@@ -949,31 +963,27 @@ with col_canvas:
 # EXECUTION LOGIC
 # ═══════════════════════════════════════════════════════════════════════════
 
-if run_sim or run_validation:
-    engine_label = {
-        "AI Surrogate": "trained AI surrogate",
-        "FDM Physics": "finite difference solver",
-    }[solver_mode] if run_sim else "AI surrogate and FDM validator"
-    with st.spinner(f"Executing {engine_label}..."):
-        validation_result = None
+if run_validation:
+    # Validation only — runs both engines and saves comparison; heatmap unchanged
+    with st.spinner("Running AI + physics comparison..."):
         try:
-            if run_validation:
-                ai_map, ai_ms = run_engine("AI Surrogate", Q_grid, k_grid, h_grid)
-                fdm_map, fdm_ms = run_engine("FDM Physics", Q_grid, k_grid, h_grid)
-                validation_result = build_validation_result(ai_map, fdm_map, ai_ms, fdm_ms)
-                T_map = ai_map if solver_mode == "AI Surrogate" else fdm_map
-                elapsed_ms = ai_ms + fdm_ms
-            elif solver_mode == "AI Surrogate":
-                T_map, elapsed_ms = run_engine("AI Surrogate", Q_grid, k_grid, h_grid)
-            else:
-                T_map, elapsed_ms = run_engine("FDM Physics", Q_grid, k_grid, h_grid)
+            ai_map, ai_ms   = run_engine("AI Surrogate", Q_grid, k_grid, h_grid)
+            fdm_map, fdm_ms = run_engine("FDM Physics",  Q_grid, k_grid, h_grid)
+            st.session_state.validation = build_validation_result(ai_map, fdm_map, ai_ms, fdm_ms)
+        except Exception as e:
+            st.error(f"Comparison failed: {e}")
+
+if run_sim:
+    engine_label = {"AI Surrogate": "trained AI surrogate", "FDM Physics": "finite difference solver"}[solver_mode]
+    with st.spinner(f"Executing {engine_label}..."):
+        try:
+            T_map, elapsed_ms = run_engine(solver_mode, Q_grid, k_grid, h_grid)
         except Exception as e:
             st.error(f"AI surrogate unavailable: {e}")
             st.info("Falling back to FDM Physics for this run.")
             solver_mode = "FDM Physics"
             T_map, elapsed_ms = run_engine("FDM Physics", Q_grid, k_grid, h_grid)
         stress_map, flag_map = compute_cte_stress(T_map, k_grid)
-        effective_engine = "Validation" if run_validation else solver_mode
         design_state = build_structured_design_state(
             components_df=edited_df,
             q_grid=Q_grid,
@@ -983,21 +993,14 @@ if run_sim or run_validation:
             stress_map=stress_map,
             flag_map=flag_map,
             material_choice=material_choice,
-            solver_mode=effective_engine,
+            solver_mode=solver_mode,
             runtime_ms=elapsed_ms,
-            validation_result=validation_result,
+            validation_result=st.session_state.get("validation"),
         )
-
-        # Save state
         st.session_state.T_map = T_map
         st.session_state.flag_map = flag_map
-        st.session_state.validation = validation_result
         st.session_state.design_state = design_state
-        st.session_state.sim_grids = {
-            "Q": Q_grid.copy(),
-            "k": k_grid.copy(),
-            "h": h_grid.copy(),
-        }
+        st.session_state.sim_grids = {"Q": Q_grid.copy(), "k": k_grid.copy(), "h": h_grid.copy()}
         st.session_state.simulation_run = True
 
         st.session_state.sim_metrics = {
@@ -1006,10 +1009,8 @@ if run_sim or run_validation:
             "stress_max": float(stress_map.max()),
             "delta_T": float(T_map.max() - T_AMBIENT),
             "material": material_choice,
-            "tsv_clusters": int((edited_df["Type"] == "TSV").sum()),
-            "engine": effective_engine,
+            "engine": solver_mode,
             "runtime_ms": float(elapsed_ms),
-            "validation_verdict": validation_result["verdict"] if validation_result else "",
         }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1021,10 +1022,9 @@ if st.session_state.simulation_run:
     T_map   = st.session_state.T_map
     flag_map = st.session_state.flag_map
 
-    # ── Compact inline results (inside right column, no scroll needed) ─────
-    with result_container:
-        st.divider()
-        st.markdown("#### Results")
+    # ── Results in right column, next to blueprint ─────────────────────────
+    with col_results:
+        st.subheader("Thermal Analysis")
         ra, rb = st.columns(2)
         ra.metric("Peak T", f"{m_data['peak_T']:.1f} °C", f"+{m_data['delta_T']:.1f} °C")
         rb.metric("CTE Failures", f"{m_data['cte_fails']} cells")
@@ -1032,7 +1032,7 @@ if st.session_state.simulation_run:
         rc.metric("Max Stress", f"{m_data['stress_max']:.0f} ppm·°C")
         rd.metric(m_data.get("engine", "FDM"), f"{m_data.get('runtime_ms', 0):.0f} ms")
 
-        fig_inline, ax_inline = plt.subplots(figsize=(4, 3.6), facecolor="#FFFFFF")
+        fig_inline, ax_inline = plt.subplots(figsize=(6, 5.5), facecolor="#FFFFFF")
         ax_inline.set_facecolor("#FFFFFF")
         im_inline = ax_inline.imshow(T_map, cmap="inferno", origin="upper",
                                      interpolation="bilinear", vmin=T_AMBIENT)
@@ -1118,9 +1118,14 @@ if st.session_state.simulation_run:
         plt.close(fig_res)
 
     with validation_tab:
+        st.button(
+            "Compare AI vs Physics",
+            use_container_width=True,
+            on_click=lambda: st.session_state.update({"_validate_requested": True}),
+        )
         validation = st.session_state.validation
         if not validation:
-            st.info("Click `VALIDATE AI VS FDM` to collect validation data for the current layout.")
+            st.caption("Run a comparison to see how closely the AI surrogate matches the physics solver for this layout.")
         else:
             st.subheader(validation["verdict"])
             st.caption(validation["verdict_detail"])
