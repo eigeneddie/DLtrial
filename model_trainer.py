@@ -13,8 +13,8 @@ print(f"Using device: {device}")
 X_data = np.load('X_data.npy')  # (1000, 3, 64, 64)
 Y_data = np.load('Y_data.npy')  # (1000, 64, 64)
 
-# Split: 800 train, 200 val
-train_size = 800
+# Split: 80/20 train/val (works for any dataset size)
+train_size = int(len(X_data) * 0.8)
 X_train = X_data[:train_size]
 Y_train = Y_data[:train_size]
 X_val = X_data[train_size:]
@@ -55,18 +55,18 @@ class ThermalSurrogate(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Conv2d(32, 1, 3, padding=1),
-            nn.Sigmoid(),
+            # No Sigmoid — linear output avoids squashing OOD high-power inputs
         )
 
     def forward(self, x):
         x = self.encoder(x)
         x = self.decoder(x)
-        return x
+        return x.clamp(0, 1)
 
 model = ThermalSurrogate().to(device)
 
-# Loss and optimizer
-criterion = nn.MSELoss()
+# L1Loss (MAE) — more robust to outliers and hot-spot extremes than MSE
+criterion = nn.L1Loss()
 optimizer = optim.Adam(model.parameters(), lr=5e-4)
 
 # Training loop
@@ -132,7 +132,7 @@ fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 ax1.plot(train_losses, label='Train Loss', marker='o', markersize=3)
 ax1.plot(val_losses, label='Val Loss', marker='s', markersize=3)
 ax1.set_xlabel('Epoch')
-ax1.set_ylabel('MSE Loss')
+ax1.set_ylabel('L1 Loss (MAE)')
 ax1.set_title('Training & Validation Loss')
 ax1.legend()
 ax1.grid(True, alpha=0.3)

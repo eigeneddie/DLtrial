@@ -80,11 +80,11 @@ TSV_H_FACTOR = 8.0
 # DATASET PARAMETERS
 # ==============================================================================
 
-NUM_SAMPLES = 1000   # fast test batch (increase to 5_000 for full training run)
+NUM_SAMPLES = 2000   # covers both standard and high-power GPU layouts
 OUTPUT_DIR  = "."
 
 # Power ranges per die type [W]
-LOGIC_POWER_RANGE  = (80.0,  150.0)
+LOGIC_POWER_RANGE  = (80.0,  300.0)   # extended to cover 295W GPU in app
 MEMORY_POWER_RANGE = (5.0,   30.0)
 TILE_POWER_RANGE   = (10.0,  60.0)
 
@@ -184,7 +184,48 @@ def disaggregated_layout(rng):
 
 
 # ==============================================================================
-# STEP 1C — MATERIAL GRID (Channel 1)
+# STEP 1C — PACKED GPU LAYOUT  (high-power stress test)
+# Two large adjacent GPU dies at max wattage — ensures the training set
+# contains the hottest configurations the app can produce.
+# ==============================================================================
+
+def packed_gpu_layout(rng):
+    """
+    Places two large high-power Logic dies side-by-side in the centre.
+    Guarantees near-max Q inputs (≥200 W) that the app's GPU preset creates.
+    """
+    Q        = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.float32)
+    occupied = np.zeros((GRID_SIZE, GRID_SIZE), dtype=bool)
+    chiplets = []
+
+    die_h = int(rng.integers(16, 22))
+    die_w = int(rng.integers(12, 18))
+    gap   = int(rng.integers(1, 3))
+    total_w = die_w * 2 + gap
+    r0 = GRID_SIZE // 2 - die_h // 2
+    c0 = GRID_SIZE // 2 - total_w // 2
+
+    for idx, col in enumerate([c0, c0 + die_w + gap]):
+        power = float(rng.uniform(200.0, 300.0))
+        if _place_rect(Q, occupied, r0, col, die_h, die_w, power):
+            chiplets.append({"label": f"GPU{idx}", "r0": r0, "c0": col,
+                              "h": die_h, "w": die_w})
+
+    # Add 1–2 memory dies around the GPUs
+    mem_h, mem_w = int(rng.integers(5, 9)), int(rng.integers(5, 9))
+    for offset in [(-mem_h - 2, die_w // 2), (die_h + 2, die_w // 2)]:
+        r1 = r0 + offset[0]
+        c1 = c0 + offset[1]
+        if _place_rect(Q, occupied, r1, c1, mem_h, mem_w,
+                       float(rng.uniform(*MEMORY_POWER_RANGE))):
+            chiplets.append({"label": "HBM", "r0": r1, "c0": c1,
+                              "h": mem_h, "w": mem_w})
+
+    return Q, chiplets
+
+
+# ==============================================================================
+# STEP 1D — MATERIAL GRID (Channel 1)
 # ==============================================================================
 
 def build_material_grid(rng):
@@ -192,6 +233,8 @@ def build_material_grid(rng):
     Builds the 64×64 conductivity map k [W/(m·K)].
     Randomly selects one bulk substrate material (Silicon or AlN) per sample.
     Returns the grid and the material name string.
+
+    Step 1E in pipeline.
     """
     material      = rng.choice(list(MATERIALS.keys()))
     k_bulk, _     = MATERIALS[material]
@@ -532,9 +575,14 @@ def main():
     last_k, last_h, last_chiplets = None, None, None
 
     for i in range(NUM_SAMPLES):
-        # Step 1: layout (50/50 split between architectures)
-        Q_grid, chiplets = (hub_and_spoke_layout(rng) if rng.random() < 0.5
-                            else disaggregated_layout(rng))
+        # Step 1: layout — 1/3 packed GPU (high-power stress), rest hub/disagg
+        r = rng.random()
+        if r < 0.33:
+            Q_grid, chiplets = packed_gpu_layout(rng)
+        elif r < 0.67:
+            Q_grid, chiplets = hub_and_spoke_layout(rng)
+        else:
+            Q_grid, chiplets = disaggregated_layout(rng)
 
         # Step 2: material and cooling channels
         k_grid, material = build_material_grid(rng)

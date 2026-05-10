@@ -42,13 +42,12 @@ class ThermalSurrogate(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Conv2d(32, 1, 3, padding=1),
-            nn.Sigmoid(),
         )
 
     def forward(self, x):
         x = self.encoder(x)
         x = self.decoder(x)
-        return x
+        return x.clamp(0, 1)
 
 
 # -----------------------------------------------------------------------------
@@ -56,11 +55,11 @@ class ThermalSurrogate(nn.Module):
 # -----------------------------------------------------------------------------
 
 X_SCALES = {
-    "Q": (0.0, 149.9663),
+    "Q": (0.0, 299.9977),
     "k": (149.0, 260.0),
     "h": (50.0, 400.0),
 }
-Y_SCALE = (25.0, 143.9612)
+Y_SCALE = (25.0, 268.1102)
 
 
 def parse_args():

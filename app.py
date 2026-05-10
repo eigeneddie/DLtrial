@@ -15,6 +15,7 @@ Run:
 """
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -102,11 +103,11 @@ EVIDENCE_SCHEMA = {
 }
 
 X_SCALES = {
-    "Q": (0.0, 149.9663),
+    "Q": (0.0, 299.9977),
     "k": (149.0, 260.0),
     "h": (50.0, 400.0),
 }
-Y_SCALE = (25.0, 143.9612)
+Y_SCALE = (25.0, 268.1102)
 
 
 class ThermalSurrogate(nn.Module):
@@ -133,11 +134,10 @@ class ThermalSurrogate(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.Conv2d(32, 1, 3, padding=1),
-            nn.Sigmoid(),
         )
 
     def forward(self, x):
-        return self.decoder(self.encoder(x))
+        return self.decoder(self.encoder(x)).clamp(0, 1)
 
 
 @st.cache_resource(show_spinner="Loading trained thermal surrogate...")
@@ -288,15 +288,9 @@ st.markdown("""
 # ═══════════════════════════════════════════════════════════════════════════
 
 if "components_df" not in st.session_state:
-    # Multi-GPU 2.5D layout — GPU0 | CPU | GPU1, HBMs flanking (50mm CoWoS board)
-    st.session_state.components_df = pd.DataFrame([
-        {"Type": "CPU", "Power_W": 105.0, "Width": 15, "Height": 15, "X_Col": 25, "Y_Row": 24},
-        {"Type": "GPU", "Power_W": 295.0, "Width": 23, "Height": 23, "X_Col":  1, "Y_Row": 20},
-        {"Type": "GPU", "Power_W": 295.0, "Width": 23, "Height": 23, "X_Col": 40, "Y_Row": 20},
-        {"Type": "HBM", "Power_W":  20.0, "Width": 10, "Height": 15, "X_Col": 27, "Y_Row":  2},
-        {"Type": "HBM", "Power_W":  20.0, "Width": 10, "Height": 15, "X_Col":  1, "Y_Row": 45},
-        {"Type": "HBM", "Power_W":  20.0, "Width": 10, "Height": 15, "X_Col": 53, "Y_Row": 45},
-    ])
+    st.session_state.components_df = pd.DataFrame(
+        columns=["Type", "Power_W", "Width", "Height", "X_Col", "Y_Row"]
+    )
 
 if "simulation_run" not in st.session_state:
     st.session_state.simulation_run = False
@@ -328,6 +322,21 @@ COMPONENT_PRESETS = {
     "HBM":  {"Power_W":  20.0, "Width": 10, "Height": 15},   # 7.75×11.87 mm
 }
 
+# h multipliers — None=ambient only, High=8× (TSV_H_FACTOR from data_generator)
+# Real h values: None=50, Low=75, Medium=125, High=400 W/(m²·K)
+TSV_DENSITY_LEVELS = {
+    "None":   1.0,
+    "Low":    1.5,
+    "Medium": 2.5,
+    "High":   TSV_H_FACTOR,
+}
+TSV_DENSITY_LABELS = {
+    "None":   "None  — h = 50 W/(m²·K)  · ambient convection only",
+    "Low":    "Low   — h = 75 W/(m²·K)  · sparse TSV array (~100 µm pitch)",
+    "Medium": "Medium — h = 125 W/(m²·K) · standard TSV array (~50 µm pitch)",
+    "High":   "High  — h = 400 W/(m²·K) · dense TSV array (~20 µm pitch)  ⚠ high cost",
+}
+
 
 def add_component_from_click(component_type, row, col):
     preset = COMPONENT_PRESETS[component_type]
@@ -350,25 +359,11 @@ def add_component_from_click(component_type, row, col):
     st.session_state.simulation_run = False
 
 
-def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_px=576):
+def render_placement_blueprint(components_df, size_px=576):
+    from PIL import ImageFont
     cell = size_px // GRID_SIZE
     image = Image.new("RGB", (size_px, size_px), "#F8FAFC")
     draw = ImageDraw.Draw(image, "RGBA")
-
-    # Cooling strips are quiet background context, not the primary interaction.
-    for i in range(int(tsv_count)):
-        if tsv_orientation == "Vertical":
-            col = 12 + i * 16
-            draw.rectangle(
-                [col * cell, 0, (col + 3) * cell - 1, size_px],
-                fill=(99, 102, 241, 45),
-            )
-        else:
-            row = 12 + i * 16
-            draw.rectangle(
-                [0, row * cell, size_px, (row + 3) * cell - 1],
-                fill=(99, 102, 241, 45),
-            )
 
     for grid_idx in range(0, GRID_SIZE + 1, 4):
         pos = grid_idx * cell
@@ -380,11 +375,13 @@ def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_p
         "CPU": (66, 133, 244, 215),   # Google blue
         "GPU": (52, 168, 83, 215),    # Google green
         "HBM": (251, 140, 0, 215),    # amber orange
+        "TSV": (99, 102, 241, 200),   # indigo
     }
     outlines = {
         "CPU": (25,  75, 180, 255),
         "GPU": (18,  90,  45, 255),
         "HBM": (180,  80,   0, 255),
+        "TSV": (60,  60, 200, 255),
     }
     type_counters = {}
     for _, row in components_df.reset_index(drop=True).iterrows():
@@ -400,12 +397,11 @@ def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_p
             draw.rectangle([x0, y0, x1, y1], fill=colors.get(comp_type, (100, 100, 200, 215)))
             draw.rectangle([x0, y0, x1, y1], outline=outlines.get(comp_type, (60, 60, 160, 255)), width=2)
 
-            label = str(type_idx)
+            label = f"{comp_type}{type_idx}"
             cx = (x0 + x1) // 2
             cy = (y0 + y1) // 2
             font_size = max(12, min(cell * int(row["Width"]) // 2, 36))
             try:
-                from PIL import ImageFont
                 font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
             except Exception:
                 font = ImageFont.load_default()
@@ -420,6 +416,19 @@ def render_placement_blueprint(components_df, tsv_count, tsv_orientation, size_p
             continue
 
     draw.rectangle([0, 0, size_px - 1, size_px - 1], outline=(148, 163, 184, 255), width=2)
+
+    # Scale label — bottom-left corner
+    scale_label = f"{int(BOARD_MM)}×{int(BOARD_MM)} mm  |  1 cell = {CELL_MM:.2f} mm"
+    try:
+        scale_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 11)
+    except Exception:
+        scale_font = ImageFont.load_default()
+    sb = draw.textbbox((0, 0), scale_label, font=scale_font)
+    sw, sh = sb[2] - sb[0], sb[3] - sb[1]
+    px, py = 6, size_px - sh - 8
+    draw.rectangle([px - 3, py - 3, px + sw + 3, py + sh + 3], fill=(255, 255, 255, 200))
+    draw.text((px, py), scale_label, fill=(80, 80, 80, 255), font=scale_font)
+
     return image
 
 
@@ -532,8 +541,6 @@ def build_structured_design_state(
     stress_map,
     flag_map,
     material_choice,
-    tsv_count,
-    tsv_orientation,
     solver_mode,
     runtime_ms,
     validation_result=None,
@@ -573,8 +580,7 @@ def build_structured_design_state(
             "ambient_temperature_C": float(T_AMBIENT),
         },
         "cooling": {
-            "tsv_strip_count": int(tsv_count),
-            "tsv_orientation": str(tsv_orientation),
+            "tsv_density_level": tsv_density,
             "baseline_h_W_per_m2K": float(H_REF),
             "max_h_W_per_m2K": float(h_grid.max()),
             "tsv_h_enhancement_factor": float(TSV_H_FACTOR),
@@ -609,7 +615,7 @@ def build_structured_design_state(
         "recommendation_variables": {
             "layout_controls": ["component type", "x_col", "y_row", "width", "height", "power_W"],
             "material_controls": ["substrate material", "thermal conductivity k", "CTE"],
-            "cooling_controls": ["TSV strip count", "TSV orientation", "local convection h"],
+            "cooling_controls": ["click-to-place TSV clusters (5×5 cells)", "local convection h"],
             "objectives": ["minimize peak temperature", "minimize CTE failure cells", "maximize AI/FDM agreement"],
         },
     }
@@ -837,8 +843,8 @@ with col_config:
 
     preset = COMPONENT_PRESETS[place_type]
     c_size, c_power = st.columns(2)
-    c_size.metric("Footprint", f"{preset['Width']} x {preset['Height']}")
-    c_power.metric("Power", f"{preset['Power_W']:.0f} W")
+    c_size.metric("Footprint", f"{preset['Width']*CELL_MM:.1f} × {preset['Height']*CELL_MM:.1f} mm")
+    c_power.metric("Power", f"{preset['Power_W']:.0f} W" if preset['Power_W'] > 0 else "Cooling")
 
     if st.button("Clear layout"):
         st.session_state.components_df = st.session_state.components_df.iloc[0:0].copy()
@@ -847,13 +853,13 @@ with col_config:
 
     st.markdown("#### Package")
     material_choice = st.selectbox("Substrate Material", list(MATERIALS.keys()), format_func=lambda x: x.upper())
+    tsv_density = st.select_slider(
+        "Interposer TSV Density",
+        options=list(TSV_DENSITY_LEVELS.keys()),
+        value="Low",
+    )
+    st.caption(TSV_DENSITY_LABELS[tsv_density])
     solver_mode = "AI Surrogate"
-
-    c_tsv, c_ori = st.columns(2)
-    with c_tsv:
-        num_tsvs = st.number_input("TSV strips", min_value=0, max_value=5, value=1)
-    with c_ori:
-        tsv_orientation = st.selectbox("Orientation", ["Vertical", "Horizontal"])
 
     run_sim = st.button("Run thermal analysis")
     run_validation = st.button("Validate AI vs FDM")
@@ -882,6 +888,9 @@ with col_config:
         )
         st.session_state.components_df = edited_df
 
+    # Results appear here (inside right column) after a simulation run
+    result_container = st.container()
+
 edited_df = st.session_state.components_df
 
 # ── Build LIVE blueprint grids ──────────────────────────────────────────────
@@ -898,36 +907,30 @@ for idx, row in edited_df.iterrows():
             float(row["Power_W"])
         )
     except Exception:
-        pass # Ignore out of bounds placing temporarily while editing
+        pass
 
 k_bulk, _ = MATERIALS[material_choice]
 k_grid    = np.full((GRID_SIZE, GRID_SIZE), k_bulk, dtype=np.float32)
 
-h_grid = np.full((GRID_SIZE, GRID_SIZE), H_REF, dtype=np.float32)
-for i in range(int(num_tsvs)):
-    if tsv_orientation == "Vertical":
-        col = 12 + i * 16
-        if col + 3 <= GRID_SIZE:
-            h_grid[:, col:col + 3] = H_REF * TSV_H_FACTOR
-    else:
-        row = 12 + i * 16
-        if row + 3 <= GRID_SIZE:
-            h_grid[row:row + 3, :] = H_REF * TSV_H_FACTOR
+h_scale = TSV_DENSITY_LEVELS[tsv_density]
+h_grid  = np.full((GRID_SIZE, GRID_SIZE), H_REF * h_scale, dtype=np.float32)
+
+_layout_hash = hashlib.md5(edited_df.to_json().encode()).hexdigest()
+if st.session_state.get("_blueprint_hash") != _layout_hash:
+    st.session_state["_blueprint_image"] = render_placement_blueprint(edited_df)
+    st.session_state["_blueprint_hash"] = _layout_hash
 
 with col_canvas:
     st.subheader("Package Blueprint")
-    blueprint_image = render_placement_blueprint(
-        edited_df,
-        tsv_count=num_tsvs,
-        tsv_orientation=tsv_orientation,
-    )
+    blueprint_image = st.session_state["_blueprint_image"]
     click = streamlit_image_coordinates(
         blueprint_image,
         width=576,
-        key=f"blueprint_click_{len(edited_df)}_{place_type}_{num_tsvs}_{tsv_orientation}",
+        key="blueprint_click",
         cursor="crosshair",
     )
-    if click:
+    if click and click != st.session_state.get("_last_click"):
+        st.session_state["_last_click"] = click
         grid_col = int(np.clip(click["x"] / 576 * GRID_SIZE, 0, GRID_SIZE - 1))
         grid_row = int(np.clip(click["y"] / 576 * GRID_SIZE, 0, GRID_SIZE - 1))
         add_component_from_click(place_type, grid_row, grid_col)
@@ -936,8 +939,10 @@ with col_canvas:
     st.caption(
         f"Selected: **{place_type}** ({COMPONENT_PRESETS[place_type]['Width']*CELL_MM:.1f}×"
         f"{COMPONENT_PRESETS[place_type]['Height']*CELL_MM:.1f} mm). "
-        f"Board: {BOARD_MM:.0f}×{BOARD_MM:.0f} mm CoWoS interposer · 1 cell = {CELL_MM:.2f} mm. "
-        f"Click to place. Blue bands = TSV cooling."
+        f"Canvas: **{BOARD_MM:.0f}×{BOARD_MM:.0f} mm** CoWoS interposer · "
+        f"{GRID_SIZE}×{GRID_SIZE} grid · 1 cell = {CELL_MM:.2f} mm · "
+        f"Scaled to match TAP-2.5D Case 1 (Ma et al., DATE 2021). "
+        f"Click to place."
     )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -978,8 +983,6 @@ if run_sim or run_validation:
             stress_map=stress_map,
             flag_map=flag_map,
             material_choice=material_choice,
-            tsv_count=num_tsvs,
-            tsv_orientation=tsv_orientation,
             solver_mode=effective_engine,
             runtime_ms=elapsed_ms,
             validation_result=validation_result,
@@ -1003,7 +1006,7 @@ if run_sim or run_validation:
             "stress_max": float(stress_map.max()),
             "delta_T": float(T_map.max() - T_AMBIENT),
             "material": material_choice,
-            "tsvs": num_tsvs,
+            "tsv_clusters": int((edited_df["Type"] == "TSV").sum()),
             "engine": effective_engine,
             "runtime_ms": float(elapsed_ms),
             "validation_verdict": validation_result["verdict"] if validation_result else "",
@@ -1014,21 +1017,60 @@ if run_sim or run_validation:
 # ═══════════════════════════════════════════════════════════════════════════
 
 if st.session_state.simulation_run:
-    st.divider()
-    st.header("Analysis Results")
+    m_data  = st.session_state.sim_metrics
+    T_map   = st.session_state.T_map
+    flag_map = st.session_state.flag_map
 
-    m_data = st.session_state.sim_metrics
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Peak Temperature", f"{m_data['peak_T']:.1f} °C", f"+{m_data['delta_T']:.1f} °C (ΔT)")
-    m2.metric("CTE Failure Zones", f"{m_data['cte_fails']} cells", delta_color="inverse")
-    m3.metric("Max Shear Stress", f"{m_data['stress_max']:.0f} ppm·°C")
-    m4.metric("Substrate k", f"{k_bulk:.0f} W/m·K", material_choice.upper())
-    m5.metric("Engine", m_data.get("engine", "FDM Physics"), f"{m_data.get('runtime_ms', 0):.1f} ms")
+    # ── Compact inline results (inside right column, no scroll needed) ─────
+    with result_container:
+        st.divider()
+        st.markdown("#### Results")
+        ra, rb = st.columns(2)
+        ra.metric("Peak T", f"{m_data['peak_T']:.1f} °C", f"+{m_data['delta_T']:.1f} °C")
+        rb.metric("CTE Failures", f"{m_data['cte_fails']} cells")
+        rc, rd = st.columns(2)
+        rc.metric("Max Stress", f"{m_data['stress_max']:.0f} ppm·°C")
+        rd.metric(m_data.get("engine", "FDM"), f"{m_data.get('runtime_ms', 0):.0f} ms")
 
+        fig_inline, ax_inline = plt.subplots(figsize=(4, 3.6), facecolor="#FFFFFF")
+        ax_inline.set_facecolor("#FFFFFF")
+        im_inline = ax_inline.imshow(T_map, cmap="inferno", origin="upper",
+                                     interpolation="bilinear", vmin=T_AMBIENT)
+        cb_inline = fig_inline.colorbar(im_inline, ax=ax_inline, fraction=0.046, pad=0.04)
+        cb_inline.set_label("°C", fontsize=8, color="#334155")
+        cb_inline.ax.yaxis.set_tick_params(color="#475569", labelsize=7)
+
+        levels_i = np.arange(np.ceil((T_AMBIENT + 5) / 20) * 20, T_map.max(), 20)
+        if len(levels_i):
+            cs_i = ax_inline.contour(T_map, levels=levels_i, colors="white",
+                                     linewidths=0.4, alpha=0.5)
+            ax_inline.clabel(cs_i, fmt="%d°C", fontsize=6, inline=True)
+
+        rows_i, cols_i = np.where(flag_map)
+        if len(rows_i):
+            ax_inline.scatter(cols_i, rows_i, c="#00FFFF", s=1.5, alpha=0.7, label="CTE fail")
+            ax_inline.legend(fontsize=7, loc="upper right",
+                             facecolor="#FFFFFF", edgecolor="#CBD5E1", labelcolor="#111827")
+
+        ax_inline.set_title("Temperature Map", fontsize=9, color="#111827")
+        ax_inline.tick_params(colors="#64748B", labelsize=7)
+        for spine in ax_inline.spines.values():
+            spine.set_edgecolor("#CBD5E1")
+        fig_inline.tight_layout()
+
+        # Encode for copilot
+        buf_i = io.BytesIO()
+        fig_inline.savefig(buf_i, format="png", dpi=110, bbox_inches="tight", facecolor="#FFFFFF")
+        buf_i.seek(0)
+        st.session_state.heatmap_b64 = base64.b64encode(buf_i.read()).decode("utf-8")
+
+        st.pyplot(fig_inline)
+        plt.close(fig_inline)
+
+    # ── Full detail below (full-width) ────────────────────────────────────
     map_tab, validation_tab = st.tabs(["Thermal Map", "Validation"])
 
     with map_tab:
-        st.markdown("### Thermal Distribution Map")
         fig_res, axes = plt.subplots(1, 4, figsize=(22, 5), facecolor="#FFFFFF")
         display_grids = st.session_state.sim_grids or {"Q": Q_grid, "k": k_grid, "h": h_grid}
 
@@ -1049,12 +1091,8 @@ if st.session_state.simulation_run:
             for spine in ax.spines.values():
                 spine.set_edgecolor("#CBD5E1")
 
-        # Temp map
         ax = axes[3]
         ax.set_facecolor("#FFFFFF")
-        T_map = st.session_state.T_map
-        flag_map = st.session_state.flag_map
-
         im = ax.imshow(T_map, cmap="inferno", origin="upper", interpolation="bilinear", vmin=T_AMBIENT)
         cb = fig_res.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cb.set_label("Temperature [°C]", fontsize=9, color="#334155")
@@ -1075,16 +1113,7 @@ if st.session_state.simulation_run:
         ax.tick_params(colors="#64748B")
         for spine in ax.spines.values():
             spine.set_edgecolor("#CBD5E1")
-
         plt.tight_layout()
-
-        # Base64 for Co-Pilot
-        buf = io.BytesIO()
-        fig_res.savefig(buf, format="png", dpi=130, bbox_inches="tight", facecolor="#FFFFFF")
-        buf.seek(0)
-        heatmap_bytes  = buf.read()
-        st.session_state.heatmap_b64 = base64.b64encode(heatmap_bytes).decode("utf-8")
-
         st.pyplot(fig_res)
         plt.close(fig_res)
 
@@ -1097,7 +1126,7 @@ if st.session_state.simulation_run:
             st.caption(validation["verdict_detail"])
 
             fig_plot, axes_plot = plt.subplots(1, 2, figsize=(14, 5), facecolor="#FFFFFF")
-            ai_flat = validation["ai_map"].ravel()
+            ai_flat  = validation["ai_map"].ravel()
             fdm_flat = validation["fdm_map"].ravel()
             sample_idx = np.linspace(0, len(ai_flat) - 1, min(700, len(ai_flat)), dtype=int)
             min_temp = min(float(ai_flat.min()), float(fdm_flat.min()))
@@ -1105,14 +1134,8 @@ if st.session_state.simulation_run:
 
             ax = axes_plot[0]
             ax.set_facecolor("#FFFFFF")
-            ax.scatter(
-                fdm_flat[sample_idx],
-                ai_flat[sample_idx],
-                s=8,
-                alpha=0.35,
-                color="#64B5F6",
-                edgecolors="none",
-            )
+            ax.scatter(fdm_flat[sample_idx], ai_flat[sample_idx],
+                       s=8, alpha=0.35, color="#64B5F6", edgecolors="none")
             ax.plot([min_temp, max_temp], [min_temp, max_temp], color="#FFB74D", linewidth=1.5)
             ax.set_title("AI vs FDM Cell Temperatures", color="#111827", fontsize=11)
             ax.set_xlabel("FDM Reference [°C]", color="#334155")
@@ -1127,14 +1150,9 @@ if st.session_state.simulation_run:
             center_row = GRID_SIZE // 2
             x_axis = np.arange(GRID_SIZE)
             ax.plot(x_axis, validation["fdm_map"][center_row], color="#FFB74D", linewidth=2, label="FDM")
-            ax.plot(x_axis, validation["ai_map"][center_row], color="#64B5F6", linewidth=2, label="AI")
-            ax.fill_between(
-                x_axis,
-                validation["fdm_map"][center_row],
-                validation["ai_map"][center_row],
-                color="#90CAF9",
-                alpha=0.18,
-            )
+            ax.plot(x_axis, validation["ai_map"][center_row],  color="#64B5F6", linewidth=2, label="AI")
+            ax.fill_between(x_axis, validation["fdm_map"][center_row], validation["ai_map"][center_row],
+                            color="#90CAF9", alpha=0.18)
             ax.set_title("Centerline Temperature Profile", color="#111827", fontsize=11)
             ax.set_xlabel("Column Index", color="#334155")
             ax.set_ylabel("Temperature [°C]", color="#334155")
