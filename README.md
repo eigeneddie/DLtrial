@@ -1,10 +1,10 @@
 # Chili Chiplets — AI Thermal Surrogate for 2.5D Heterogeneously Integrated Microelectonics
 
+<p align="center"><img src="supplementary_info/logo.png" width="400"/></p>
+
 > **Winner of Devices, Process Flow, Models & Packaging track** — Microsystems Technology Laboratories (MTL) Hackathon 2026 at MIT | [Pitch Presentation](supplementary_info/Chili%20Chiplets%20presentation.pdf)
 
 An interactive EDA tool that predicts steady-state thermal distribution across a 2.5D chiplet layout in **milliseconds**, replacing multi-hour finite-element simulations during early co-design.
-
-![GUI Preview](supplementary_info/GUI-preview-screenshot.png)
 
 ---
 
@@ -88,6 +88,8 @@ python visualize_model_predictions.py --count 4 --seed 42
 4. **Read the heatmap** — The temperature map updates instantly via AI inference. CTE stress regions are flagged in red.
 5. **Validate** — Go to the Validation tab and click "Compare AI vs Physics" to run the FDM solver and compare both outputs side by side.
 6. **Physics mode** — Toggle "Switch to physics engine mode" in the sidebar to always use FDM instead of the CNN.
+
+![GUI Preview](supplementary_info/GUI-preview-screenshot.png)
 
 ---
 
