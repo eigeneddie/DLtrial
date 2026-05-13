@@ -1,4 +1,4 @@
-# Chili Chiplets — AI Thermal Surrogate for 2.5D Heterogeneous Integration
+# Chili Chiplets — AI Thermal Surrogate for 2.5D Heterogeneously Integrated Microelectonics
 
 > **Winner of Devices, Process Flow, Models & Packaging track** — Microsystems Technology Laboratories (MTL) Hackathon 2026 at MIT | [Pitch Presentation](supplementary_info/Chili%20Chiplets%20presentation.pdf)
 
@@ -156,3 +156,6 @@ All values are min-max normalized to [0, 1]. See `readme.txt` for exact normaliz
 - Chen, S., Li, S., Zhuang, Z., Zheng, S., Liang, Z., Ho, T.-Y., Yu, B., & Sangiovanni-Vincentelli, A. L. *Floorplet: Performance-aware Floorplan Framework for Chiplet Integration*. arXiv:2308.01672, 2023.
 - Sharma, M. K., & Ramos-Alvarado, B. *Thermal Management of 3-D Heterogeneously Integrated Microelectronics: Challenges and Future Research Directions*. Communications Engineering (Nature Portfolio), 2026.
 - Huang, W. et al. *HotSpot: A Compact Thermal Modeling Methodology for Early-Stage VLSI Design*. IEEE TVLSI 2006.
+
+## Acknowledgement
+- Would like to thank MTL and event organizers for organizing the event and teammates Brian and Dinish for the effort in the hackathon.
