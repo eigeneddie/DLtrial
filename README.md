@@ -158,4 +158,4 @@ All values are min-max normalized to [0, 1]. See `readme.txt` for exact normaliz
 - Huang, W. et al. *HotSpot: A Compact Thermal Modeling Methodology for Early-Stage VLSI Design*. IEEE TVLSI 2006.
 
 ## Acknowledgement
-- Would like to thank MTL and event organizers for organizing the event and teammates Brian and Dinish for the effort in the hackathon.
+- Would like to thank MTL and event organizers for organizing the event and teammates Brian and Dinesh for the effort in the hackathon.
