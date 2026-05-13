@@ -82,6 +82,7 @@ TSV_H_FACTOR = 8.0
 
 NUM_SAMPLES = 2000   # covers both standard and high-power GPU layouts
 OUTPUT_DIR  = "."
+FIGURES_DIR = "figures"
 
 # Power ranges per die type [W]
 LOGIC_POWER_RANGE  = (80.0,  300.0)   # extended to cover 295W GPU in app
@@ -607,7 +608,8 @@ def main():
             )
 
     # Sanity-check plot uses raw physical values — do this before normalizing
-    plot_path = os.path.join(OUTPUT_DIR, "sanity_check.png")
+    os.makedirs(FIGURES_DIR, exist_ok=True)
+    plot_path = os.path.join(FIGURES_DIR, "sanity_check.png")
     plot_sanity_check(X_data[-1], Y_data[-1], last_k, last_h,
                       chiplets=last_chiplets, save_path=plot_path)
 

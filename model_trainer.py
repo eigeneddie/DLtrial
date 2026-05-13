@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import torch
 import torch.nn as nn
@@ -146,7 +147,8 @@ ax2.legend()
 ax2.grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig('training_loss.png', dpi=150, bbox_inches='tight')
+os.makedirs("figures", exist_ok=True)
+plt.savefig('figures/training_loss.png', dpi=150, bbox_inches='tight')
 plt.show()
 
 print("Training complete. Next step: run inference or evaluation script.")

@@ -67,4 +67,5 @@ def simple_plot_sample(Q, k, h, T, save_path=None):
         plt.show()
 
 # Generate plot for the first sample
-simple_plot_sample(Q_grid, k_grid, h_grid, T_map, save_path="sample_100.png")
+import os; os.makedirs("figures", exist_ok=True)
+simple_plot_sample(Q_grid, k_grid, h_grid, T_map, save_path="figures/sample_100.png")

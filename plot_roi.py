@@ -119,6 +119,7 @@ ax2_left.legend(lines, labels, fontsize=9, loc="upper left")
 
 # ── Save ──────────────────────────────────────────────────────────────────────
 fig.tight_layout()
-plt.savefig("roi_surrogate_vs_simulation.png", dpi=150, bbox_inches="tight")
-print("Saved: roi_surrogate_vs_simulation.png")
+import os; os.makedirs("figures", exist_ok=True)
+plt.savefig("figures/roi_surrogate_vs_simulation.png", dpi=150, bbox_inches="tight")
+print("Saved: figures/roi_surrogate_vs_simulation.png")
 plt.show()
