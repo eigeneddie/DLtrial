@@ -1,6 +1,6 @@
 # Chili Chiplets — AI Thermal Surrogate for 2.5D Heterogeneous Integration
 
-> **Winner, Devices, Process Flow, Models & Packaging track** — MIT Microsystems Technology Laboratories (MTL) Hackathon 2026 | [Pitch Presentation](supplementary_info/Chili%20Chiplets%20presentation.pdf)
+> **Winner of Devices, Process Flow, Models & Packaging track** — Microsystems Technology Laboratories (MTL) Hackathon 2026 at MIT | [Pitch Presentation](supplementary_info/Chili%20Chiplets%20presentation.pdf)
 
 An interactive EDA tool that predicts steady-state thermal distribution across a 2.5D chiplet layout in **milliseconds**, replacing multi-hour finite-element simulations during early co-design.
 
@@ -15,7 +15,7 @@ Advanced 2.5D packaging (e.g., TSMC CoWoS) suffers from thermal crosstalk and CT
 ## The Solution
 
 A CNN surrogate trained on synthetic FDM data that:
-- Predicts full 64×64 temperature heatmaps in **<10 ms**
+- Predicts full 64×64 temperature heatmaps in **milliseconds**
 - Covers substrate material choice (Silicon vs. AlN) and TSV cooling density
 - Overlays CTE shear stress flags automatically
 - Lets engineers place dies interactively and see thermal consequences in real time
