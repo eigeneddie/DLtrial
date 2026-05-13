@@ -1,6 +1,6 @@
 # Chili Chiplets — AI Thermal Surrogate for 2.5D Heterogeneously Integrated Microelectonics
 
-<p align="center"><img src="supplementary_info/logo.png" width="400"/></p>
+<p align="center"><img src="supplementary_info/logo.png" width="100%"/></p>
 
 > **Winner of Devices, Process Flow, Models & Packaging track** — Microsystems Technology Laboratories (MTL) Hackathon 2026 at MIT | [Pitch Presentation](supplementary_info/Chili%20Chiplets%20presentation.pdf)
 
